@@ -31,6 +31,19 @@ Run the bilingual setup guide:
 llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```
 
+The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, and temperature:
+
+```text
+Listen host / 本地监听地址 [127.0.0.1]:
+Listen port / 本地监听端口 [18080]:
+Provider name / 上游服务名称 [Custom Provider]:
+Upstream base URL / 上游 Base URL:
+Upstream model / 上游模型名称:
+API key environment variable / API Key 环境变量 [LLM_API_KEY]:
+API key command (optional) / API Key 读取命令（可选）:
+Temperature / 采样温度 [0]:
+```
+
 For complete setup instructions, see [Configuration Guide](docs/configuration.md).
 
 The generated file looks like this:

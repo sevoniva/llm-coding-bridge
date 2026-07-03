@@ -28,7 +28,7 @@ Confirm the command is available:
 llm-coding-bridge --help
 ```
 
-## 2. Create Configuration
+## 2. Guided Setup
 
 Run the setup guide:
 
@@ -36,20 +36,42 @@ Run the setup guide:
 llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```
 
-Prompts:
+The command starts an interactive bilingual setup flow:
 
 ```text
-Listen host / 本地监听地址 [127.0.0.1]:
-Listen port / 本地监听端口 [18080]:
-Provider name / 上游服务名称 [Custom Provider]:
-Upstream base URL / 上游 Base URL:
-Upstream model / 上游模型名称:
-API key environment variable / API Key 环境变量 [LLM_API_KEY]:
+LLM Coding Bridge setup / LLM Coding Bridge 配置向导
+API keys are read from environment variables or commands and are not written to config files.
+API Key 通过环境变量或命令读取，不写入配置文件。
+
+Listen host / 本地监听地址 [127.0.0.1]: 127.0.0.1
+Listen port / 本地监听端口 [18080]: 18080
+Provider name / 上游服务名称 [Custom Provider]: Custom Provider
+Upstream base URL / 上游 Base URL: https://api.example.com/v1
+Upstream model / 上游模型名称: model-name
+API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
-Temperature / 采样温度 [0]:
+Temperature / 采样温度 [0]: 0
+
+Wrote config: /Users/me/.llm-coding-bridge/config.json
+配置已写入：/Users/me/.llm-coding-bridge/config.json
+Set key: export LLM_API_KEY="..."
+设置 Key：export LLM_API_KEY="..."
 ```
 
-Example output:
+Prompt reference:
+
+| Prompt | Description | Recommended value |
+|---|---|---|
+| `Listen host` | Local bind address. Use loopback for local-only access. | `127.0.0.1` |
+| `Listen port` | Local bridge port used by Codex and Claude Code. | `18080` |
+| `Provider name` | Display name for logs and doctor output. | Provider or team name |
+| `Upstream base URL` | OpenAI-compatible upstream base URL. Include `/v1`. | `https://api.example.com/v1` |
+| `Upstream model` | Model name sent to the upstream provider. | Provider model ID |
+| `API key environment variable` | Environment variable used to read the upstream API key. | `LLM_API_KEY` |
+| `API key command` | Optional command that prints the upstream API key. Recommended for background services. | Keychain or secret-manager command |
+| `Temperature` | Sampling temperature sent to the upstream provider. | `0` for coding workflows |
+
+Generated config:
 
 ```json
 {
@@ -387,7 +409,7 @@ npm install -g ./sevoniva-llm-coding-bridge-0.1.0.tgz
 llm-coding-bridge --help
 ```
 
-## 2. 生成配置
+## 2. 配置向导
 
 运行配置向导：
 
@@ -395,18 +417,40 @@ llm-coding-bridge --help
 llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```
 
-向导会依次询问：
+命令会启动中英文交互式配置流程：
 
 ```text
-Listen host / 本地监听地址 [127.0.0.1]:
-Listen port / 本地监听端口 [18080]:
-Provider name / 上游服务名称 [Custom Provider]:
-Upstream base URL / 上游 Base URL:
-Upstream model / 上游模型名称:
-API key environment variable / API Key 环境变量 [LLM_API_KEY]:
+LLM Coding Bridge setup / LLM Coding Bridge 配置向导
+API keys are read from environment variables or commands and are not written to config files.
+API Key 通过环境变量或命令读取，不写入配置文件。
+
+Listen host / 本地监听地址 [127.0.0.1]: 127.0.0.1
+Listen port / 本地监听端口 [18080]: 18080
+Provider name / 上游服务名称 [Custom Provider]: Custom Provider
+Upstream base URL / 上游 Base URL: https://api.example.com/v1
+Upstream model / 上游模型名称: model-name
+API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
-Temperature / 采样温度 [0]:
+Temperature / 采样温度 [0]: 0
+
+Wrote config: /Users/me/.llm-coding-bridge/config.json
+配置已写入：/Users/me/.llm-coding-bridge/config.json
+Set key: export LLM_API_KEY="..."
+设置 Key：export LLM_API_KEY="..."
 ```
+
+字段说明：
+
+| 提示项 | 说明 | 建议值 |
+|---|---|---|
+| `Listen host` | 本地监听地址。仅本机使用时保持 loopback 地址。 | `127.0.0.1` |
+| `Listen port` | 本地 bridge 端口，Codex 和 Claude Code 都连接这个端口。 | `18080` |
+| `Provider name` | 用于日志和 doctor 输出的显示名称。 | 服务名称或团队名称 |
+| `Upstream base URL` | OpenAI-compatible 上游 Base URL，需要包含 `/v1`。 | `https://api.example.com/v1` |
+| `Upstream model` | 发送给上游服务的模型名称。 | 上游模型 ID |
+| `API key environment variable` | 读取上游 API Key 的环境变量名。 | `LLM_API_KEY` |
+| `API key command` | 可选。输出上游 API Key 的命令，适合后台服务和开机自启。 | Keychain 或密钥管理命令 |
+| `Temperature` | 发送给上游服务的采样温度。 | 编码场景建议 `0` |
 
 生成配置示例：
 
