@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, timingSafeEqual } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const readline = require("node:readline/promises");
 
@@ -948,12 +948,30 @@ function codexCatalogModel(config, home = os.homedir()) {
 }
 
 function startServer(config) {
+  const localToken = config.server.localToken || null;
+  function authorized(req) {
+    if (!localToken) return true;
+    const auth = req.headers.authorization || "";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const xKey = req.headers["x-api-key"] || "";
+    const candidates = [bearer, xKey].filter((c) => c && c.length === localToken.length);
+    for (const candidate of candidates) {
+      try {
+        if (timingSafeEqual(Buffer.from(candidate), Buffer.from(localToken))) return true;
+      } catch {}
+    }
+    return false;
+  }
   const server = http.createServer(async (req, res) => {
     try {
       const pathname = new URL(req.url || "/", `http://${config.server.host}:${config.server.port}`).pathname;
       if (req.method === "GET" && pathname === "/health") {
         debug("GET /health");
         sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (!authorized(req)) {
+        sendJson(res, 401, { error: { message: "Unauthorized.", type: "auth_error" } });
         return;
       }
       if (req.method === "GET" && pathname === "/v1/models") {
@@ -1201,13 +1219,14 @@ async function initConfig(out, runDoctor) {
     const apiKeyEnv = valueOrDefault(await prompt.ask("API key environment variable / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY");
     const apiKeyCommand = valueOrDefault(await prompt.ask("API key command (optional) / API Key 读取命令（可选）: "), "");
     const temperature = Number(valueOrDefault(await prompt.ask("Temperature / 采样温度 [0]: "), "0"));
+    const localToken = valueOrDefault(await prompt.ask("Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）: "), "");
     if (!baseUrl) throw new Error("Upstream base URL is required.");
     if (!model) throw new Error("Upstream model is required.");
     if (!Number.isFinite(port)) throw new Error("Port must be a number.");
     if (!Number.isFinite(temperature)) throw new Error("Temperature must be a number.");
 
     const config = {
-      server: { host, port },
+      server: { host, port, ...(localToken ? { localToken } : {}) },
       upstream: { name, baseUrl, model, apiKeyEnv, temperature },
     };
     if (apiKeyCommand) config.upstream.apiKeyCommand = apiKeyCommand;

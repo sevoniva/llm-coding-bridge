@@ -333,7 +333,8 @@ async function main() {
     "example-model",
     "EXAMPLE_API_KEY",
     "",
-    "0"
+    "0",
+    ""
   ].join("\n"));
   let initErr = "";
   init.stderr.on("data", (chunk) => { initErr += chunk; });
@@ -406,6 +407,45 @@ async function main() {
   assert.equal(count, 1, `apiKeyCommand should spawn once, got ${count}`);
   cmdBridge.kill("SIGTERM");
   await new Promise((resolve) => cmdBridge.on("close", resolve));
+
+  // 可选本地 token 鉴权
+  const authConfigPath = path.join(tmp, "auth.config.json");
+  const authBridgePort = upstreamPort + 3;
+  fs.writeFileSync(authConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: authBridgePort, localToken: "secret-token-xyz" },
+    upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
+  }, null, 2));
+  const authBridge = spawn(process.execPath, [cli, "serve", "--config", authConfigPath], {
+    env: { ...process.env, FAKE_API_KEY: "upstream-key" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try {
+      const h = await fetch(`http://127.0.0.1:${authBridgePort}/health`);
+      if (h.status === 200) break;
+    } catch {}
+    await wait(100);
+  }
+  const healthNoAuth = await fetch(`http://127.0.0.1:${authBridgePort}/health`);
+  assert.equal(healthNoAuth.status, 200);
+  const noToken = await requestRaw(`http://127.0.0.1:${authBridgePort}/v1/chat/completions`, {
+    model: "fake-model", messages: [{ role: "user", content: "hello" }], stream: false,
+  });
+  assert.equal(noToken.status, 401);
+  const wrongToken = await requestRaw(`http://127.0.0.1:${authBridgePort}/v1/chat/completions`, {
+    model: "fake-model", messages: [{ role: "user", content: "hello" }], stream: false,
+  }, { Authorization: "Bearer wrong" });
+  assert.equal(wrongToken.status, 401);
+  const okBearer = await requestJson(`http://127.0.0.1:${authBridgePort}/v1/chat/completions`, {
+    model: "fake-model", messages: [{ role: "user", content: "hello" }], stream: false,
+  }, { Authorization: "Bearer secret-token-xyz" });
+  assert.equal(okBearer.choices[0].message.content, "echo:hello");
+  const okApiKey = await requestJson(`http://127.0.0.1:${authBridgePort}/v1/chat/completions`, {
+    model: "fake-model", messages: [{ role: "user", content: "hello" }], stream: false,
+  }, { "x-api-key": "secret-token-xyz" });
+  assert.equal(okApiKey.choices[0].message.content, "echo:hello");
+  authBridge.kill("SIGTERM");
+  await new Promise((resolve) => authBridge.on("close", resolve));
 
   bridge.kill("SIGTERM");
   await new Promise((resolve) => bridge.on("close", resolve));
