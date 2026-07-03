@@ -1,0 +1,37 @@
+{
+  "name": "@sevoniva/llm-coding-bridge",
+  "version": "0.1.0",
+  "description": "Local bridge for using OpenAI-compatible chat completion providers with coding clients.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "llm-coding-bridge": "./bin/llm-coding-bridge.js"
+  },
+  "files": [
+    "bin",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/smoke.js",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "codex",
+    "claude-code",
+    "llm",
+    "openai-compatible",
+    "responses-api"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sevoniva/llm-coding-bridge.git"
+  }
+}

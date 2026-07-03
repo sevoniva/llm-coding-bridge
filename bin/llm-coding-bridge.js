@@ -1,0 +1,888 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("node:fs");
+const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
+const { randomUUID } = require("node:crypto");
+const { spawnSync } = require("node:child_process");
+const readline = require("node:readline/promises");
+
+const DEFAULT_CONFIG = "llm-coding-bridge.config.json";
+
+function parseArgs(argv) {
+  const command = argv[0] && !argv[0].startsWith("-") ? argv.shift() : "help";
+  const args = { command, config: DEFAULT_CONFIG, out: DEFAULT_CONFIG, name: "llm-coding-bridge" };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--config" || arg === "-c") args.config = argv[++i];
+    else if (arg === "--out" || arg === "-o") args.out = argv[++i];
+    else if (arg === "--name") args.name = argv[++i];
+    else if (arg === "--no-doctor") args.doctor = false;
+    else if (arg === "--help" || arg === "-h") args.help = true;
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  return args;
+}
+
+function usage() {
+  return `Usage:
+  llm-coding-bridge init --out llm-coding-bridge.config.json
+  llm-coding-bridge serve --config llm-coding-bridge.config.json
+  llm-coding-bridge doctor --config llm-coding-bridge.config.json
+  llm-coding-bridge template codex
+  llm-coding-bridge template claude
+  llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+  llm-coding-bridge uninstall-service`;
+}
+
+function loadConfig(file) {
+  const configPath = path.resolve(file);
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const server = { host: "127.0.0.1", port: 18080, ...(config.server || {}) };
+  const upstream = config.upstream || {};
+  if (!upstream.baseUrl) throw new Error("Missing upstream.baseUrl.");
+  if (!upstream.model) throw new Error("Missing upstream.model.");
+  if (!upstream.apiKeyEnv && !upstream.apiKeyCommand) {
+    throw new Error("Missing upstream.apiKeyEnv or upstream.apiKeyCommand.");
+  }
+  return { path: configPath, server, upstream };
+}
+
+function getApiKey(upstream) {
+  if (upstream.apiKeyEnv && process.env[upstream.apiKeyEnv]) {
+    return process.env[upstream.apiKeyEnv];
+  }
+  if (!upstream.apiKeyCommand) {
+    throw new Error(`Missing API key env: ${upstream.apiKeyEnv}`);
+  }
+
+  const command = upstream.apiKeyCommand;
+  const result =
+    typeof command === "string"
+      ? spawnSync("/bin/sh", ["-lc", command], { encoding: "utf8" })
+      : spawnSync(command.command, command.args || [], { encoding: "utf8" });
+
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`apiKeyCommand exited with ${result.status}: ${result.stderr.trim()}`);
+  const token = result.stdout.trim();
+  if (!token) throw new Error("apiKeyCommand returned an empty token.");
+  return token;
+}
+
+function upstreamUrl(upstream) {
+  return `${upstream.baseUrl.replace(/\/$/, "")}/chat/completions`;
+}
+
+async function readJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString("utf8");
+  return text ? JSON.parse(text) : {};
+}
+
+function sendJson(res, status, body) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(body));
+}
+
+function debug(message) {
+  if (process.env.LLM_CODING_BRIDGE_DEBUG) console.error(`[debug] ${message}`);
+}
+
+function writeSse(res, event, body) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(body)}\n\n`);
+}
+
+async function fetchUpstream(config, payload) {
+  const timeoutMs = Number(config.upstream.timeoutMs || 600000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(upstreamUrl(config.upstream), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${getApiKey(config.upstream)}`,
+        "Content-Type": "application/json",
+        Accept: payload.stream ? "text/event-stream" : "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchUpstreamJson(config, payload) {
+  const response = await fetchUpstream(config, { ...payload, stream: false });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Upstream HTTP ${response.status}: ${text.slice(0, 300)}`);
+  return JSON.parse(text);
+}
+
+function textFromContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      return part?.text || part?.input_text || part?.output_text || "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function responsesInputToMessages(payload) {
+  const messages = [];
+  if (payload.instructions) messages.push({ role: "system", content: String(payload.instructions) });
+  const input = Array.isArray(payload.input) ? payload.input : [payload.input];
+
+  for (const item of input) {
+    if (!item) continue;
+    if (typeof item === "string") {
+      messages.push({ role: "user", content: item });
+      continue;
+    }
+    if (item.type === "function_call_output") {
+      messages.push({ role: "tool", tool_call_id: item.call_id, content: String(item.output || "") });
+      continue;
+    }
+    if (item.type === "function_call") {
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: item.call_id || item.id || `call_${randomUUID()}`,
+            type: "function",
+            function: { name: item.name, arguments: item.arguments || "{}" },
+          },
+        ],
+      });
+      continue;
+    }
+    if (item.type === "message" || item.role) {
+      const role = item.role === "developer" ? "system" : item.role || "user";
+      messages.push({ role, content: textFromContent(item.content) });
+    }
+  }
+
+  return messages.length ? messages : [{ role: "user", content: "" }];
+}
+
+function convertTools(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const converted = tools
+    .filter((tool) => tool?.type === "function" || tool?.name)
+    .map((tool) => ({
+      type: "function",
+      function: tool.function || {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.parameters || { type: "object", properties: {} },
+      },
+    }));
+  return converted.length ? converted : undefined;
+}
+
+function responsesToChatPayload(config, payload) {
+  const chat = {
+    model: config.upstream.model,
+    messages: responsesInputToMessages(payload),
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  const tools = convertTools(payload.tools);
+  if (tools) chat.tools = tools;
+  if (payload.tool_choice) chat.tool_choice = payload.tool_choice;
+  if (payload.max_output_tokens) chat.max_tokens = payload.max_output_tokens;
+  if (Number.isFinite(config.upstream.temperature)) chat.temperature = config.upstream.temperature;
+  if (config.upstream.reasoningEffort !== false) chat.reasoning_effort = config.upstream.reasoningEffort || "none";
+  return chat;
+}
+
+function buildResponsesOutput(message) {
+  const output = [];
+  const text = message?.content || "";
+  if (text) {
+    output.push({
+      id: `msg_${randomUUID()}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text, annotations: [] }],
+    });
+  }
+  for (const call of message?.tool_calls || []) {
+    output.push({
+      id: call.id || `fc_${randomUUID()}`,
+      type: "function_call",
+      status: "completed",
+      call_id: call.id || `call_${randomUUID()}`,
+      name: call.function?.name || call.name,
+      arguments: call.function?.arguments || call.arguments || "{}",
+    });
+  }
+  return output;
+}
+
+function chatToResponse(config, chat) {
+  const message = chat.choices?.[0]?.message || {};
+  const output = buildResponsesOutput(message);
+  const outputText = output
+    .filter((item) => item.type === "message")
+    .flatMap((item) => item.content || [])
+    .map((part) => part.text || "")
+    .join("");
+
+  return {
+    id: `resp_${randomUUID()}`,
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    status: "completed",
+    error: null,
+    incomplete_details: null,
+    model: config.upstream.model,
+    output,
+    output_text: outputText,
+    parallel_tool_calls: true,
+    store: false,
+    usage: {
+      input_tokens: chat.usage?.prompt_tokens || 0,
+      output_tokens: chat.usage?.completion_tokens || 0,
+      total_tokens: chat.usage?.total_tokens || 0,
+    },
+  };
+}
+
+function approxTokens(text) {
+  return Math.max(1, Math.ceil(String(text || "").length / 4));
+}
+
+function anthropicText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part?.type === "text" || typeof part === "string")
+    .map((part) => (typeof part === "string" ? part : part.text || ""))
+    .join("\n");
+}
+
+function anthropicToChatPayload(config, payload) {
+  const messages = [];
+  if (payload.system) messages.push({ role: "system", content: anthropicText(payload.system) || String(payload.system) });
+  for (const item of payload.messages || []) {
+    if (item.role === "assistant" && Array.isArray(item.content)) {
+      const toolCalls = item.content
+        .filter((part) => part.type === "tool_use")
+        .map((part) => ({
+          id: part.id,
+          type: "function",
+          function: { name: part.name, arguments: JSON.stringify(part.input || {}) },
+        }));
+      const text = anthropicText(item.content);
+      messages.push({ role: "assistant", content: text || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) });
+      continue;
+    }
+    const toolResults = Array.isArray(item.content) ? item.content.filter((part) => part.type === "tool_result") : [];
+    for (const result of toolResults) {
+      messages.push({ role: "tool", tool_call_id: result.tool_use_id, content: anthropicText(result.content) || String(result.content || "") });
+    }
+    const text = anthropicText(item.content);
+    if (text || !toolResults.length) messages.push({ role: item.role || "user", content: text });
+  }
+  const chat = {
+    model: config.upstream.model,
+    messages,
+    stream: false,
+  };
+  if (payload.max_tokens) chat.max_tokens = payload.max_tokens;
+  if (Number.isFinite(config.upstream.temperature)) chat.temperature = config.upstream.temperature;
+  if (config.upstream.reasoningEffort !== false) chat.reasoning_effort = config.upstream.reasoningEffort || "none";
+  const tools = Array.isArray(payload.tools)
+    ? payload.tools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description || "",
+          parameters: tool.input_schema || { type: "object", properties: {} },
+        },
+      }))
+    : [];
+  if (tools.length) {
+    chat.tools = tools;
+    chat.tool_choice = "auto";
+  }
+  return chat;
+}
+
+function chatToAnthropic(config, chat) {
+  const message = chat.choices?.[0]?.message || {};
+  const content = [];
+  if (message.content) content.push({ type: "text", text: message.content });
+  for (const call of message.tool_calls || []) {
+    let input = {};
+    try {
+      input = JSON.parse(call.function?.arguments || "{}");
+    } catch {
+      input = {};
+    }
+    content.push({ type: "tool_use", id: call.id, name: call.function?.name || call.name, input });
+  }
+  return {
+    id: `msg_${randomUUID()}`,
+    type: "message",
+    role: "assistant",
+    model: config.upstream.model,
+    content,
+    stop_reason: message.tool_calls?.length ? "tool_use" : "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: chat.usage?.prompt_tokens || 0,
+      output_tokens: chat.usage?.completion_tokens || approxTokens(message.content || ""),
+    },
+  };
+}
+
+function streamAnthropic(res, message) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  writeSse(res, "message_start", { type: "message_start", message: { ...message, content: [] } });
+  message.content.forEach((block, index) => {
+    const emptyBlock = block.type === "text" ? { type: "text", text: "" } : { ...block, input: {} };
+    writeSse(res, "content_block_start", { type: "content_block_start", index, content_block: emptyBlock });
+    if (block.type === "text") {
+      writeSse(res, "content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } });
+    } else if (block.type === "tool_use") {
+      writeSse(res, "content_block_delta", {
+        type: "content_block_delta",
+        index,
+        delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input || {}) },
+      });
+    }
+    writeSse(res, "content_block_stop", { type: "content_block_stop", index });
+  });
+  writeSse(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: message.stop_reason, stop_sequence: null },
+    usage: { output_tokens: message.usage.output_tokens },
+  });
+  writeSse(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
+class ResponsesWriter {
+  constructor(model, res = null) {
+    this.model = model;
+    this.res = res;
+    this.id = `resp_${randomUUID()}`;
+    this.createdAt = Math.floor(Date.now() / 1000);
+    this.sequence = 0;
+    this.output = [];
+    this.nextOutputIndex = 0;
+    this.message = null;
+    this.tools = new Map();
+    this.toolOrder = [];
+  }
+
+  response(status = "in_progress", usage = null) {
+    return {
+      id: this.id,
+      object: "response",
+      created_at: this.createdAt,
+      status,
+      error: null,
+      incomplete_details: null,
+      model: this.model,
+      output: this.output,
+      output_text: this.outputText(),
+      parallel_tool_calls: false,
+      tool_choice: "auto",
+      tools: [],
+      store: false,
+      usage,
+    };
+  }
+
+  outputText() {
+    return this.output
+      .filter((item) => item.type === "message")
+      .flatMap((item) => item.content || [])
+      .map((part) => part.text || "")
+      .join("");
+  }
+
+  event(type, body) {
+    if (!this.res) return;
+    writeSse(this.res, type, { type, sequence_number: this.sequence, ...body });
+    this.sequence += 1;
+  }
+
+  start() {
+    if (!this.res) return;
+    this.res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    });
+    this.event("response.created", { response: this.response() });
+    this.event("response.in_progress", { response: this.response() });
+  }
+
+  ensureMessage() {
+    if (this.message) return this.message;
+    this.message = {
+      id: `msg_${randomUUID()}`,
+      outputIndex: this.nextOutputIndex,
+      text: "",
+    };
+    this.nextOutputIndex += 1;
+    this.event("response.output_item.added", {
+      output_index: this.message.outputIndex,
+      item: { id: this.message.id, type: "message", status: "in_progress", role: "assistant", content: [] },
+    });
+    this.event("response.content_part.added", {
+      item_id: this.message.id,
+      output_index: this.message.outputIndex,
+      content_index: 0,
+      part: { type: "output_text", text: "", annotations: [] },
+    });
+    return this.message;
+  }
+
+  textDelta(delta) {
+    if (!delta) return;
+    const message = this.ensureMessage();
+    message.text += delta;
+    this.event("response.output_text.delta", {
+      item_id: message.id,
+      output_index: message.outputIndex,
+      content_index: 0,
+      delta,
+    });
+  }
+
+  finishMessage() {
+    if (!this.message) return;
+    const part = { type: "output_text", text: this.message.text, annotations: [] };
+    const item = {
+      id: this.message.id,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [part],
+    };
+    this.event("response.output_text.done", {
+      item_id: this.message.id,
+      output_index: this.message.outputIndex,
+      content_index: 0,
+      text: this.message.text,
+    });
+    this.event("response.content_part.done", {
+      item_id: this.message.id,
+      output_index: this.message.outputIndex,
+      content_index: 0,
+      part,
+    });
+    this.event("response.output_item.done", { output_index: this.message.outputIndex, item });
+    this.output.push(item);
+    this.message = null;
+  }
+
+  toolDelta(index, callId, name, argumentsDelta) {
+    this.finishMessage();
+    if (!this.tools.has(index)) {
+      const tool = {
+        itemId: `fc_${randomUUID()}`,
+        callId: callId || `call_${randomUUID()}`,
+        name: name || "",
+        arguments: "",
+        outputIndex: this.nextOutputIndex,
+      };
+      this.nextOutputIndex += 1;
+      this.tools.set(index, tool);
+      this.toolOrder.push(index);
+      this.event("response.output_item.added", {
+        output_index: tool.outputIndex,
+        item: {
+          id: tool.itemId,
+          type: "function_call",
+          status: "in_progress",
+          call_id: tool.callId,
+          name: tool.name,
+          arguments: "",
+        },
+      });
+    }
+    const tool = this.tools.get(index);
+    if (callId) tool.callId = callId;
+    if (name) tool.name = name;
+    if (argumentsDelta) {
+      tool.arguments += argumentsDelta;
+      this.event("response.function_call_arguments.delta", {
+        item_id: tool.itemId,
+        output_index: tool.outputIndex,
+        delta: argumentsDelta,
+      });
+    }
+  }
+
+  finishTools() {
+    for (const index of this.toolOrder) {
+      const tool = this.tools.get(index);
+      const item = {
+        id: tool.itemId,
+        type: "function_call",
+        status: "completed",
+        call_id: tool.callId,
+        name: tool.name,
+        arguments: tool.arguments,
+      };
+      this.event("response.function_call_arguments.done", {
+        item_id: tool.itemId,
+        output_index: tool.outputIndex,
+        arguments: tool.arguments,
+      });
+      this.event("response.output_item.done", { output_index: tool.outputIndex, item });
+      this.output.push(item);
+    }
+    this.tools.clear();
+    this.toolOrder = [];
+  }
+
+  complete(usage) {
+    this.finishMessage();
+    this.finishTools();
+    const response = this.response("completed", responseUsage(usage));
+    if (this.res) {
+      this.event("response.completed", { response });
+      this.res.write("data: [DONE]\n\n");
+      this.res.end();
+    }
+    return response;
+  }
+}
+
+function responseUsage(usage) {
+  usage ||= {};
+  const input = usage.prompt_tokens || usage.input_tokens || 0;
+  const output = usage.completion_tokens || usage.output_tokens || 0;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: usage.total_tokens || input + output,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: 0 },
+  };
+}
+
+async function eachSseData(body, onData) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary;
+    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+      const event = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const lines = event.split(/\r?\n/).filter((line) => line.startsWith("data:"));
+      if (lines.length) onData(lines.map((line) => line.slice(5).trimStart()).join("\n"));
+    }
+  }
+}
+
+async function handleChat(config, payload, res) {
+  const upstreamPayload = { ...payload, model: config.upstream.model };
+  const upstream = await fetchUpstream(config, upstreamPayload);
+  if (!upstream.ok) {
+    sendJson(res, upstream.status, { error: { message: await upstream.text(), type: "upstream_error" } });
+    return;
+  }
+  if (!payload.stream) {
+    sendJson(res, upstream.status, await upstream.json());
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": upstream.headers.get("content-type") || "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  const reader = upstream.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    res.write(Buffer.from(value));
+  }
+  res.end();
+}
+
+async function handleResponses(config, payload, res) {
+  const chatPayload = responsesToChatPayload(config, payload);
+  debug(
+    `chat payload messages=${chatPayload.messages.map((m) => `${m.role}:${String(m.content || "").length}`).join(",")} tools=${chatPayload.tools?.length || 0}`,
+  );
+  const upstream = await fetchUpstream(config, chatPayload);
+  if (!upstream.ok) {
+    sendJson(res, upstream.status, { error: { message: await upstream.text(), type: "upstream_error" } });
+    return;
+  }
+
+  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null);
+  writer.start();
+  let usage = null;
+  const contentType = upstream.headers.get("content-type") || "";
+
+  if (contentType.includes("text/event-stream")) {
+    await eachSseData(upstream.body, (data) => {
+      if (data === "[DONE]") return;
+      let chunk;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        return;
+      }
+      usage = chunk.usage || usage;
+      for (const choice of chunk.choices || []) {
+        const delta = choice.delta || {};
+        if (delta.content) writer.textDelta(delta.content);
+        for (const call of delta.tool_calls || []) {
+          const fn = call.function || {};
+          writer.toolDelta(call.index || 0, call.id, fn.name, fn.arguments || "");
+        }
+      }
+    });
+  } else {
+    const data = await upstream.json();
+    usage = data.usage || usage;
+    const message = data.choices?.[0]?.message || {};
+    if (message.content) writer.textDelta(message.content);
+    for (const [index, call] of (message.tool_calls || []).entries()) {
+      const fn = call.function || {};
+      writer.toolDelta(index, call.id, fn.name, fn.arguments || "");
+    }
+  }
+
+  const response = writer.complete(usage);
+  debug(`responses converted output=${response.output.length} text=${response.output_text.length}`);
+  if (!payload.stream) sendJson(res, 200, response);
+}
+
+async function handleAnthropicMessages(config, payload, res) {
+  const chat = await fetchUpstreamJson(config, anthropicToChatPayload(config, payload));
+  const message = chatToAnthropic(config, chat);
+  if (payload.stream) streamAnthropic(res, message);
+  else sendJson(res, 200, message);
+}
+
+function handleAnthropicTokenCount(payload, res) {
+  const text = [
+    payload.system ? anthropicText(payload.system) || String(payload.system) : "",
+    ...(payload.messages || []).map((message) => anthropicText(message.content)),
+  ].join("\n");
+  sendJson(res, 200, { input_tokens: approxTokens(text) });
+}
+
+function startServer(config) {
+  const server = http.createServer(async (req, res) => {
+    try {
+      const pathname = new URL(req.url || "/", `http://${config.server.host}:${config.server.port}`).pathname;
+      if (req.method === "GET" && pathname === "/health") {
+        debug("GET /health");
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "GET" && pathname === "/v1/models") {
+        debug("GET /v1/models");
+        sendJson(res, 200, {
+          object: "list",
+          data: [{ id: config.upstream.model, object: "model", created: 0, owned_by: config.upstream.name || "upstream" }],
+        });
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/chat/completions") {
+        debug("POST /v1/chat/completions");
+        await handleChat(config, await readJson(req), res);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/responses") {
+        const payload = await readJson(req);
+        const input = Array.isArray(payload.input) ? payload.input.length : typeof payload.input;
+        debug(`POST /v1/responses stream=${payload.stream === true} input=${input}`);
+        await handleResponses(config, payload, res);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/messages") {
+        debug("POST /v1/messages");
+        await handleAnthropicMessages(config, await readJson(req), res);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/v1/messages/count_tokens") {
+        debug("POST /v1/messages/count_tokens");
+        handleAnthropicTokenCount(await readJson(req), res);
+        return;
+      }
+      sendJson(res, 404, { error: { message: `Not found: ${req.method} ${req.url}`, type: "not_found" } });
+    } catch (error) {
+      sendJson(res, 500, { error: { message: error.message || String(error), type: "bridge_error" } });
+    }
+  });
+
+  server.listen(config.server.port, config.server.host, () => {
+    console.error(`LLM Coding Bridge listening on http://${config.server.host}:${config.server.port}/v1`);
+  });
+  return server;
+}
+
+async function doctor(config) {
+  const chat = await fetchUpstreamJson(config, {
+    model: config.upstream.model,
+    messages: [
+      { role: "system", content: "Follow the user's instruction exactly. Do not explain." },
+      { role: "user", content: "Reply with exactly: OK" },
+    ],
+    temperature: 0,
+  });
+  const text = (chat.choices?.[0]?.message?.content || "").trim();
+  if (text !== "OK") throw new Error(`Unexpected upstream response: ${JSON.stringify(text.slice(0, 120))}`);
+  const response = chatToResponse(config, chat);
+  if (response.output_text !== "OK") throw new Error("Responses conversion failed.");
+  console.log(`[OK] ${config.upstream.name || "upstream"} -> ${config.upstream.model}`);
+}
+
+function valueOrDefault(value, fallback) {
+  const trimmed = String(value || "").trim();
+  return trimmed || fallback;
+}
+
+async function initConfig(out, runDoctor) {
+  const prompt = createPrompt();
+  try {
+    console.log("Create bridge configuration / 创建中转配置");
+    console.log("API keys are read from environment variables or commands. They are not written to config files.");
+    console.log("API Key 通过环境变量或命令读取，不会写入配置文件。\n");
+    const host = valueOrDefault(await prompt.ask("Listen host / 监听地址 [127.0.0.1]: "), "127.0.0.1");
+    const port = Number(valueOrDefault(await prompt.ask("Listen port / 监听端口 [18080]: "), "18080"));
+    const name = valueOrDefault(await prompt.ask("Provider name / 服务名称 [Custom Provider]: "), "Custom Provider");
+    const baseUrl = valueOrDefault(await prompt.ask("Upstream base URL / 上游 API 地址: "), "");
+    const model = valueOrDefault(await prompt.ask("Upstream model / 上游模型: "), "");
+    const apiKeyEnv = valueOrDefault(await prompt.ask("API key env / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY");
+    const apiKeyCommand = valueOrDefault(await prompt.ask("API key command / API Key 命令 [optional]: "), "");
+    const temperature = Number(valueOrDefault(await prompt.ask("Temperature / 温度 [0]: "), "0"));
+    if (!baseUrl) throw new Error("Upstream base URL is required.");
+    if (!model) throw new Error("Upstream model is required.");
+    if (!Number.isFinite(port)) throw new Error("Port must be a number.");
+    if (!Number.isFinite(temperature)) throw new Error("Temperature must be a number.");
+
+    const config = {
+      server: { host, port },
+      upstream: { name, baseUrl, model, apiKeyEnv, temperature },
+    };
+    if (apiKeyCommand) config.upstream.apiKeyCommand = apiKeyCommand;
+
+    const file = path.resolve(out);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+    console.log(`\nWrote config: ${file}`);
+    console.log(`配置已写入：${file}`);
+    console.log(`Set key: export ${apiKeyEnv}="..."`);
+    console.log(`设置 Key：export ${apiKeyEnv}="..."`);
+    if (runDoctor !== false) await doctor(loadConfig(file));
+  } finally {
+    prompt.close();
+  }
+}
+
+function createPrompt() {
+  if (!process.stdin.isTTY) {
+    const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
+    return {
+      ask(question) {
+        process.stdout.write(question);
+        return Promise.resolve(lines.shift() || "");
+      },
+      close() {},
+    };
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return {
+    ask(question) {
+      return rl.question(question);
+    },
+    close() {
+      rl.close();
+    },
+  };
+}
+
+function printTemplate(name) {
+  const file = name === "claude" || name === "claude-code" ? "claude-code.env" : "codex.config.toml";
+  process.stdout.write(fs.readFileSync(path.join(__dirname, "..", "templates", file), "utf8"));
+}
+
+function plistPath() {
+  return path.join(os.homedir(), "Library", "LaunchAgents", "com.sevoniva.llm-coding-bridge.plist");
+}
+
+function installService(configPath) {
+  if (process.platform !== "darwin") throw new Error("install-service currently supports macOS launchd only.");
+  const config = path.resolve(configPath);
+  const logDir = path.join(os.homedir(), ".llm-coding-bridge", "logs");
+  fs.mkdirSync(logDir, { recursive: true });
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.sevoniva.llm-coding-bridge</string>
+  <key>ProgramArguments</key><array>
+    <string>${process.execPath}</string><string>${__filename}</string><string>serve</string><string>--config</string><string>${config}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${path.join(logDir, "out.log")}</string>
+  <key>StandardErrorPath</key><string>${path.join(logDir, "err.log")}</string>
+</dict></plist>
+`;
+  fs.mkdirSync(path.dirname(plistPath()), { recursive: true });
+  fs.writeFileSync(plistPath(), plist);
+  const domain = `gui/${process.getuid()}`;
+  spawnSync("launchctl", ["bootout", domain, plistPath()], { stdio: "ignore" });
+  const result = spawnSync("launchctl", ["bootstrap", domain, plistPath()], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr.trim() || "launchctl bootstrap failed");
+  console.log(`[OK] installed ${plistPath()}`);
+}
+
+function uninstallService() {
+  if (process.platform !== "darwin") throw new Error("uninstall-service currently supports macOS launchd only.");
+  const domain = `gui/${process.getuid()}`;
+  spawnSync("launchctl", ["bootout", domain, plistPath()], { stdio: "ignore" });
+  fs.rmSync(plistPath(), { force: true });
+  console.log(`[OK] removed ${plistPath()}`);
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help || args.command === "help") {
+    console.log(usage());
+    return;
+  }
+  if (args.command === "template") return printTemplate(process.argv[3] || "codex");
+  if (args.command === "init") return initConfig(args.out, args.doctor);
+  if (args.command === "doctor") return doctor(loadConfig(args.config));
+  if (args.command === "serve") return startServer(loadConfig(args.config));
+  if (args.command === "install-service") return installService(args.config);
+  if (args.command === "uninstall-service") return uninstallService();
+  throw new Error(`Unknown command: ${args.command}`);
+}
+
+main().catch((error) => {
+  console.error(error.stack || String(error));
+  process.exitCode = 1;
+});
