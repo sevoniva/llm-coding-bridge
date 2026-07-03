@@ -230,6 +230,15 @@ async function main() {
   assert.equal(searchTool.output[0].execution, "client");
   assert.equal(searchTool.output[0].arguments.query, "Gmail search emails");
 
+  // 流式异常：上游 !ok 时收到 response.failed 而非 response.completed
+  const failStream = await requestRaw(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+    model: "fake-model",
+    input: "upstream fail",
+    stream: true,
+  });
+  assert.match(failStream.text, /response\.failed/);
+  assert.doesNotMatch(failStream.text, /response\.completed/);
+
   const models = await fetch(`http://127.0.0.1:${bridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
   assert.equal(models.status, 200);
   const modelsBody = await models.json();

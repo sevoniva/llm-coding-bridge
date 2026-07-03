@@ -708,6 +708,19 @@ class ResponsesWriter {
     }
     return response;
   }
+
+  fail(message = "Upstream error.", code = "upstream_error") {
+    this.finishMessage();
+    this.finishTools();
+    const response = this.response("failed");
+    response.error = { message, code };
+    if (this.res) {
+      this.event("response.failed", { response });
+      this.res.write("data: [DONE]\n\n");
+      this.res.end();
+    }
+    return response;
+  }
 }
 
 function responseUsage(usage) {
@@ -773,45 +786,52 @@ async function handleResponses(config, payload, res) {
     `chat payload messages=${chatPayload.messages.map((m) => `${m.role}:${String(m.content || "").length}`).join(",")} tools=${chatPayload.tools?.length || 0}`,
   );
   const upstream = await fetchUpstream(config, chatPayload);
+  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null, customToolNames(payload.tools), toolSearchNames(payload.tools));
+  writer.start();
   if (!upstream.ok) {
     await upstream.text();
-    sendJson(res, upstream.status, { error: { message: `Upstream HTTP ${upstream.status}.`, type: "upstream_error" } });
+    const failed = writer.fail("Upstream error.", "upstream_error");
+    if (!payload.stream) sendJson(res, 200, failed);
     return;
   }
 
-  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null, customToolNames(payload.tools), toolSearchNames(payload.tools));
-  writer.start();
   let usage = null;
   const contentType = upstream.headers.get("content-type") || "";
 
-  if (contentType.includes("text/event-stream")) {
-    await eachSseData(upstream.body, (data) => {
-      if (data === "[DONE]") return;
-      let chunk;
-      try {
-        chunk = JSON.parse(data);
-      } catch {
-        return;
-      }
-      usage = chunk.usage || usage;
-      for (const choice of chunk.choices || []) {
-        const delta = choice.delta || {};
-        if (delta.content) writer.textDelta(delta.content);
-        for (const call of delta.tool_calls || []) {
-          const fn = call.function || {};
-          writer.toolDelta(call.index || 0, call.id, fn.name, fn.arguments || "");
+  try {
+    if (contentType.includes("text/event-stream")) {
+      await eachSseData(upstream.body, (data) => {
+        if (data === "[DONE]") return;
+        let chunk;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          return;
         }
+        usage = chunk.usage || usage;
+        for (const choice of chunk.choices || []) {
+          const delta = choice.delta || {};
+          if (delta.content) writer.textDelta(delta.content);
+          for (const call of delta.tool_calls || []) {
+            const fn = call.function || {};
+            writer.toolDelta(call.index || 0, call.id, fn.name, fn.arguments || "");
+          }
+        }
+      });
+    } else {
+      const data = await upstream.json();
+      usage = data.usage || usage;
+      const message = data.choices?.[0]?.message || {};
+      if (message.content) writer.textDelta(message.content);
+      for (const [index, call] of (message.tool_calls || []).entries()) {
+        const fn = call.function || {};
+        writer.toolDelta(index, call.id, fn.name, fn.arguments || "");
       }
-    });
-  } else {
-    const data = await upstream.json();
-    usage = data.usage || usage;
-    const message = data.choices?.[0]?.message || {};
-    if (message.content) writer.textDelta(message.content);
-    for (const [index, call] of (message.tool_calls || []).entries()) {
-      const fn = call.function || {};
-      writer.toolDelta(index, call.id, fn.name, fn.arguments || "");
     }
+  } catch {
+    const failed = writer.fail("Upstream error.", "upstream_error");
+    if (!payload.stream) sendJson(res, 200, failed);
+    return;
   }
 
   const response = writer.complete(usage);
@@ -820,7 +840,13 @@ async function handleResponses(config, payload, res) {
 }
 
 async function handleAnthropicMessages(config, payload, res) {
-  const chat = await fetchUpstreamJson(config, anthropicToChatPayload(config, payload));
+  const upstream = await fetchUpstream(config, { ...anthropicToChatPayload(config, payload), stream: false });
+  const text = await upstream.text();
+  if (!upstream.ok) {
+    sendJson(res, upstream.status, { type: "error", error: { type: "api_error", message: "Upstream error." } });
+    return;
+  }
+  const chat = JSON.parse(text);
   const message = chatToAnthropic(config, chat);
   if (payload.stream) streamAnthropic(res, message);
   else sendJson(res, 200, message);
