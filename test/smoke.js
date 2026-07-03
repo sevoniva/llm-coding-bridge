@@ -64,6 +64,7 @@ function sse(res, body) {
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "llm-coding-bridge-"));
   let upstreamRequests = 0;
+  let upstreamStreamClosed = false;
   const upstream = http.createServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
       res.writeHead(404).end();
@@ -105,6 +106,12 @@ async function main() {
         return;
       }
       const text = prompt.includes("exactly") ? "OK" : `echo:${prompt}`;
+      if (prompt.includes("long stream")) {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        sse(res, { id: "chatcmpl-long", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "partial" } }] });
+        res.on("close", () => { upstreamStreamClosed = true; });
+        return;
+      }
       if (payload.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         sse(res, { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: text } }] });
@@ -349,6 +356,17 @@ async function main() {
   }
 
   assert.ok(upstreamRequests >= 4);
+
+  // 客户端断开取消上游 reader
+  const abortRes = await fetch(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+    body: JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "long stream" }], stream: true }),
+  });
+  await wait(100);
+  abortRes.body.cancel();
+  await wait(400);
+  assert.equal(upstreamStreamClosed, true, "upstream stream should be closed when client disconnects");
 
   // apiKeyCommand 缓存：多次请求只 spawn 一次
   const cmdTmp = fs.mkdtempSync(path.join(os.tmpdir(), "lcb-cmd-"));

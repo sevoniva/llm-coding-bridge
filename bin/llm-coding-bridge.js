@@ -754,6 +754,26 @@ async function eachSseData(body, onData) {
   }
 }
 
+async function pipeStream(upstreamBody, res) {
+  const reader = upstreamBody.getReader();
+  let aborted = false;
+  const onClose = () => { aborted = true; reader.cancel().catch(() => {}); };
+  res.on("close", onClose);
+  try {
+    while (!aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+  } catch {
+    // abort 或写失败，静默
+  } finally {
+    res.off("close", onClose);
+    if (!aborted) reader.cancel().catch(() => {});
+  }
+  res.end();
+}
+
 async function handleChat(config, payload, res) {
   const upstreamPayload = { ...payload, model: config.upstream.model };
   const upstream = await fetchUpstream(config, upstreamPayload);
@@ -771,13 +791,7 @@ async function handleChat(config, payload, res) {
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
   });
-  const reader = upstream.body.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    res.write(Buffer.from(value));
-  }
-  res.end();
+  await pipeStream(upstream.body, res);
 }
 
 async function handleResponses(config, payload, res) {
