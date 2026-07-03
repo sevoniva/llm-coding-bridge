@@ -9,6 +9,7 @@
   },
   "files": [
     "bin",
+    "lib",
     "docs",
     "scripts",
     "templates",
@@ -18,7 +19,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "lint": "node --check bin/llm-coding-bridge.js && node --check test/smoke.js && node --check scripts/security-scan.js",
+    "lint": "node --check bin/llm-coding-bridge.js && node --check lib/*.js && node --check lib/converters/*.js && node --check test/smoke.js && node --check scripts/security-scan.js",
     "security:scan": "node scripts/security-scan.js",
     "secretlint": "secretlint \"**/*\" --secretlintrc .secretlintrc.json --secretlintignore .secretlintignore",
     "repo:gate": "node scripts/repo-gate.js",

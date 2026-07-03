@@ -447,6 +447,91 @@ async function main() {
   authBridge.kill("SIGTERM");
   await new Promise((resolve) => authBridge.on("close", resolve));
 
+  // 多上游 model 路由
+  const upstream2 = http.createServer((req, res) => {
+    if (req.method !== "POST" || req.url !== "/v1/chat/completions") { res.writeHead(404).end(); return; }
+    let raw = ""; req.setEncoding("utf8"); req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "u2", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "from-upstream-2" }, finish_reason: "stop" }] }));
+    });
+  });
+  await new Promise((resolve) => upstream2.listen(0, "127.0.0.1", resolve));
+  upstream2.unref();
+  const upstream2Port = upstream2.address().port;
+  const multiConfigPath = path.join(tmp, "multi.config.json");
+  const multiBridgePort = upstreamPort + 4;
+  fs.writeFileSync(multiConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: multiBridgePort },
+    upstreams: [
+      { name: "u1", model: "model-a", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKeyEnv: "FAKE_API_KEY" },
+      { name: "u2", model: "model-b", baseUrl: `http://127.0.0.1:${upstream2Port}/v1`, apiKeyEnv: "FAKE_API_KEY" },
+    ],
+  }, null, 2));
+  const multiBridge = spawn(process.execPath, [cli, "serve", "--config", multiConfigPath], {
+    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try { const h = await fetch(`http://127.0.0.1:${multiBridgePort}/health`); if (h.status === 200) break; } catch {}
+    await wait(100);
+  }
+  const routeA = await requestJson(`http://127.0.0.1:${multiBridgePort}/v1/chat/completions`, {
+    model: "model-a", messages: [{ role: "user", content: "hello" }], stream: false,
+  });
+  assert.equal(routeA.choices[0].message.content, "echo:hello");
+  const routeB = await requestJson(`http://127.0.0.1:${multiBridgePort}/v1/chat/completions`, {
+    model: "model-b", messages: [{ role: "user", content: "hello" }], stream: false,
+  });
+  assert.equal(routeB.choices[0].message.content, "from-upstream-2");
+  const multiModels = await fetch(`http://127.0.0.1:${multiBridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
+  const multiModelsBody = await multiModels.json();
+  assert.equal(multiModelsBody.data.length, 2);
+  multiBridge.kill("SIGTERM");
+  await new Promise((resolve) => multiBridge.on("close", resolve));
+  await new Promise((resolve) => upstream2.close(resolve));
+
+  // 优雅退出：SIGTERM 终止进行中流式响应
+  const graceConfigPath = path.join(tmp, "grace.config.json");
+  const graceBridgePort = upstreamPort + 5;
+  fs.writeFileSync(graceConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: graceBridgePort },
+    upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
+  }, null, 2));
+  const graceBridge = spawn(process.execPath, [cli, "serve", "--config", graceConfigPath], {
+    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try { const h = await fetch(`http://127.0.0.1:${graceBridgePort}/health`); if (h.status === 200) break; } catch {}
+    await wait(100);
+  }
+  const graceStreamRes = await fetch(`http://127.0.0.1:${graceBridgePort}/v1/responses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+    body: JSON.stringify({ model: "fake-model", input: "long stream", stream: true }),
+  });
+  const graceReader = graceStreamRes.body.getReader();
+  const graceFirst = await graceReader.read();
+  graceBridge.kill("SIGTERM");
+  const graceChunks = [];
+  try {
+    while (true) {
+      const { done, value } = await graceReader.read();
+      if (done) break;
+      graceChunks.push(Buffer.from(value).toString("utf8"));
+    }
+  } catch {}
+  const graceFull = (graceFirst.value ? Buffer.from(graceFirst.value).toString("utf8") : "") + graceChunks.join("");
+  assert.match(graceFull, /response\.failed|\[DONE\]/);
+
+  // 请求体大小限制
+  const bigBody = JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "x".repeat(11 * 1024 * 1024) }], stream: false });
+  const bigRes = await fetch(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+    body: bigBody,
+  });
+  assert.equal(bigRes.status, 413);
+
   bridge.kill("SIGTERM");
   await new Promise((resolve) => bridge.on("close", resolve));
   await new Promise((resolve) => upstream.close(resolve));

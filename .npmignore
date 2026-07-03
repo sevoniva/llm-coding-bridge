@@ -2,3 +2,4 @@ test/
 *.config.json
 .git/
 .github/
+docs/superpowers/
