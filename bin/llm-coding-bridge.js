@@ -704,9 +704,11 @@ function startServer(config) {
       }
       if (req.method === "GET" && pathname === "/v1/models") {
         debug("GET /v1/models");
+        const model = { id: config.upstream.model, object: "model", created: 0, owned_by: config.upstream.name || "upstream" };
         sendJson(res, 200, {
           object: "list",
-          data: [{ id: config.upstream.model, object: "model", created: 0, owned_by: config.upstream.name || "upstream" }],
+          data: [model],
+          models: [model],
         });
         return;
       }

@@ -131,7 +131,9 @@ async function main() {
 
   const models = await fetch(`http://127.0.0.1:${bridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
   assert.equal(models.status, 200);
-  assert.equal((await models.json()).data[0].id, "fake-model");
+  const modelsBody = await models.json();
+  assert.equal(modelsBody.data[0].id, "fake-model");
+  assert.equal(modelsBody.models[0].id, "fake-model");
 
   const claude = await requestJson(`http://127.0.0.1:${bridgePort}/v1/messages`, {
     model: "client-model",
