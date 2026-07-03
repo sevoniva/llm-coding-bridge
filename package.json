@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "commonjs",
   "bin": {
-    "llm-coding-bridge": "./bin/llm-coding-bridge.js"
+    "llm-coding-bridge": "bin/llm-coding-bridge.js"
   },
   "files": [
     "bin",
@@ -29,10 +29,11 @@
     "responses-api"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sevoniva/llm-coding-bridge.git"
+    "url": "git+https://github.com/sevoniva/llm-coding-bridge.git"
   }
 }
