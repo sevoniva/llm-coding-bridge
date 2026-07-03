@@ -69,6 +69,20 @@ async function main() {
       upstreamRequests += 1;
       const payload = JSON.parse(raw);
       const prompt = payload.messages[payload.messages.length - 1].content;
+      const tool = (payload.tools || []).map((item) => item.function).find((item) => item?.name === "bridge_probe" || item?.name === "bridge_freeform");
+      if (tool) {
+        const message = { role: "assistant", content: null, tool_calls: [{ id: "call_probe", type: "function", function: { name: tool.name, arguments: JSON.stringify({ input: "OK" }) } }] };
+        if (payload.stream) {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          sse(res, { id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_probe", type: "function", function: { name: tool.name, arguments: JSON.stringify({ input: "OK" }) } }] }, finish_reason: "tool_calls" }] });
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: "chatcmpl-tool", object: "chat.completion", choices: [{ index: 0, message, finish_reason: "tool_calls" }] }));
+        return;
+      }
       const text = prompt.includes("exactly") ? "OK" : `echo:${prompt}`;
       if (payload.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -141,12 +155,38 @@ async function main() {
   assert.equal(responses.output_text, "echo:hello responses");
   assert.equal(responses.output[0].content[0].text, "echo:hello responses");
 
+  const compact = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses/compact`, {
+    model: "client-model",
+    input: "hello compact",
+    stream: false,
+  });
+  assert.equal(compact.output_text, "echo:hello compact");
+
+  const responsesWithTools = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+    model: "client-model",
+    input: "use tool",
+    stream: false,
+    tools: [{ type: "function", function: { name: "test_tool", description: "A test tool", parameters: { type: "object", properties: {} } } }],
+  });
+  assert.equal(responsesWithTools.output_text, "echo:use tool");
+
+  const customTool = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+    model: "client-model",
+    input: "use custom tool",
+    stream: false,
+    tools: [{ type: "custom", name: "bridge_freeform", description: "Freeform tool" }],
+  });
+  assert.equal(customTool.output[0].type, "custom_tool_call");
+  assert.equal(customTool.output[0].name, "bridge_freeform");
+  assert.equal(customTool.output[0].input, "OK");
+
   const models = await fetch(`http://127.0.0.1:${bridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
   assert.equal(models.status, 200);
   const modelsBody = await models.json();
   assert.equal(modelsBody.data[0].id, "fake-model");
   assert.equal(modelsBody.models[0].slug, "fake-model");
   assert.equal(modelsBody.models[0].context_window, 128000);
+  assert.deepEqual(modelsBody.models[0].input_modalities, ["text"]);
   assert.ok(modelsBody.models[0].model_messages);
 
   const status = await runCli(cli, ["status", "--config", configPath]);
@@ -187,6 +227,10 @@ async function main() {
   assert.equal(deepDoctor.code, 0, deepDoctor.stderr || deepDoctor.stdout);
   assert.match(deepDoctor.stdout, /responses/);
   assert.match(deepDoctor.stdout, /messages/);
+  const toolsDoctor = await runCli(cli, ["doctor", "--tools", "--config", configPath], { env: { FAKE_API_KEY: "upstream-key" } });
+  assert.equal(toolsDoctor.code, 0, toolsDoctor.stderr || toolsDoctor.stdout);
+  assert.match(toolsDoctor.stdout, /function tool call/);
+  assert.match(toolsDoctor.stdout, /custom tool call/);
 
   const profileHome = path.join(tmp, "profile-home");
   const profile = await runCli(cli, ["codex-profile", "--config", configPath, "--name", "bridge", "--home", profileHome]);

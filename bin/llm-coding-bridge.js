@@ -24,6 +24,7 @@ function parseArgs(argv) {
     else if (arg === "--lines") args.lines = Number(argv[++i]);
     else if (arg === "--force") args.force = true;
     else if (arg === "--deep") args.deep = true;
+    else if (arg === "--tools") args.tools = true;
     else if (arg === "--no-doctor") args.doctor = false;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -37,6 +38,7 @@ function usage() {
   llm-coding-bridge serve --config llm-coding-bridge.config.json
   llm-coding-bridge doctor --config llm-coding-bridge.config.json
   llm-coding-bridge doctor --deep --config llm-coding-bridge.config.json
+  llm-coding-bridge doctor --tools --config llm-coding-bridge.config.json
   llm-coding-bridge status --config llm-coding-bridge.config.json
   llm-coding-bridge codex-profile --config llm-coding-bridge.config.json --name bridge
   llm-coding-bridge template codex
@@ -183,7 +185,11 @@ function responsesInputToMessages(payload) {
       messages.push({ role: "tool", tool_call_id: item.call_id, content: String(item.output || "") });
       continue;
     }
-    if (item.type === "function_call") {
+    if (item.type === "custom_tool_call_output") {
+      messages.push({ role: "tool", tool_call_id: item.call_id, content: String(item.output || "") });
+      continue;
+    }
+    if (item.type === "function_call" || item.type === "custom_tool_call") {
       messages.push({
         role: "assistant",
         content: null,
@@ -191,7 +197,7 @@ function responsesInputToMessages(payload) {
           {
             id: item.call_id || item.id || `call_${randomUUID()}`,
             type: "function",
-            function: { name: item.name, arguments: item.arguments || "{}" },
+            function: { name: item.name, arguments: item.arguments || JSON.stringify({ input: item.input || "" }) },
           },
         ],
       });
@@ -209,16 +215,29 @@ function responsesInputToMessages(payload) {
 function convertTools(tools) {
   if (!Array.isArray(tools)) return undefined;
   const converted = tools
-    .filter((tool) => tool?.type === "function" || tool?.name)
+    .filter((tool) => tool?.type === "function" || tool?.type === "custom" || tool?.name)
     .map((tool) => ({
       type: "function",
       function: tool.function || {
         name: tool.name,
         description: tool.description || "",
-        parameters: tool.parameters || { type: "object", properties: {} },
+        parameters: tool.parameters || { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
       },
     }));
   return converted.length ? converted : undefined;
+}
+
+function customToolNames(tools) {
+  return new Set((Array.isArray(tools) ? tools : []).filter((tool) => tool?.type === "custom").map((tool) => tool.name).filter(Boolean));
+}
+
+function toolInputFromArguments(value) {
+  const raw = String(value || "");
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
+  } catch {}
+  return raw;
 }
 
 function responsesToChatPayload(config, payload) {
@@ -237,7 +256,7 @@ function responsesToChatPayload(config, payload) {
   return chat;
 }
 
-function buildResponsesOutput(message) {
+function buildResponsesOutput(message, customNames = new Set()) {
   const output = [];
   const text = message?.content || "";
   if (text) {
@@ -250,12 +269,24 @@ function buildResponsesOutput(message) {
     });
   }
   for (const call of message?.tool_calls || []) {
+    const name = call.function?.name || call.name;
+    if (customNames.has(name)) {
+      output.push({
+        id: call.id || `ctc_${randomUUID()}`,
+        type: "custom_tool_call",
+        status: "completed",
+        call_id: call.id || `call_${randomUUID()}`,
+        name,
+        input: toolInputFromArguments(call.function?.arguments || call.arguments),
+      });
+      continue;
+    }
     output.push({
       id: call.id || `fc_${randomUUID()}`,
       type: "function_call",
       status: "completed",
       call_id: call.id || `call_${randomUUID()}`,
-      name: call.function?.name || call.name,
+      name,
       arguments: call.function?.arguments || call.arguments || "{}",
     });
   }
@@ -327,6 +358,7 @@ function anthropicToChatPayload(config, payload) {
     const text = anthropicText(item.content);
     if (text || !toolResults.length) messages.push({ role: item.role || "user", content: text });
   }
+
   const chat = {
     model: config.upstream.model,
     messages,
@@ -411,9 +443,10 @@ function streamAnthropic(res, message) {
 }
 
 class ResponsesWriter {
-  constructor(model, res = null) {
+  constructor(model, res = null, customNames = new Set()) {
     this.model = model;
     this.res = res;
+    this.customNames = customNames;
     this.id = `resp_${randomUUID()}`;
     this.createdAt = Math.floor(Date.now() / 1000);
     this.sequence = 0;
@@ -531,37 +564,37 @@ class ResponsesWriter {
   toolDelta(index, callId, name, argumentsDelta) {
     this.finishMessage();
     if (!this.tools.has(index)) {
+      const custom = this.customNames.has(name);
       const tool = {
-        itemId: `fc_${randomUUID()}`,
+        itemId: `${custom ? "ctc" : "fc"}_${randomUUID()}`,
         callId: callId || `call_${randomUUID()}`,
         name: name || "",
         arguments: "",
         outputIndex: this.nextOutputIndex,
+        custom,
       };
       this.nextOutputIndex += 1;
       this.tools.set(index, tool);
       this.toolOrder.push(index);
       this.event("response.output_item.added", {
         output_index: tool.outputIndex,
-        item: {
-          id: tool.itemId,
-          type: "function_call",
-          status: "in_progress",
-          call_id: tool.callId,
-          name: tool.name,
-          arguments: "",
-        },
+        item: tool.custom
+          ? { id: tool.itemId, type: "custom_tool_call", status: "in_progress", call_id: tool.callId, name: tool.name, input: "" }
+          : { id: tool.itemId, type: "function_call", status: "in_progress", call_id: tool.callId, name: tool.name, arguments: "" },
       });
     }
     const tool = this.tools.get(index);
     if (callId) tool.callId = callId;
-    if (name) tool.name = name;
+    if (name) {
+      tool.name = name;
+      tool.custom ||= this.customNames.has(name);
+    }
     if (argumentsDelta) {
       tool.arguments += argumentsDelta;
-      this.event("response.function_call_arguments.delta", {
+      this.event(tool.custom ? "response.custom_tool_call_input.delta" : "response.function_call_arguments.delta", {
         item_id: tool.itemId,
         output_index: tool.outputIndex,
-        delta: argumentsDelta,
+        delta: tool.custom ? toolInputFromArguments(tool.arguments) : argumentsDelta,
       });
     }
   }
@@ -569,18 +602,13 @@ class ResponsesWriter {
   finishTools() {
     for (const index of this.toolOrder) {
       const tool = this.tools.get(index);
-      const item = {
-        id: tool.itemId,
-        type: "function_call",
-        status: "completed",
-        call_id: tool.callId,
-        name: tool.name,
-        arguments: tool.arguments,
-      };
-      this.event("response.function_call_arguments.done", {
+      const item = tool.custom
+        ? { id: tool.itemId, type: "custom_tool_call", status: "completed", call_id: tool.callId, name: tool.name, input: toolInputFromArguments(tool.arguments) }
+        : { id: tool.itemId, type: "function_call", status: "completed", call_id: tool.callId, name: tool.name, arguments: tool.arguments };
+      this.event(tool.custom ? "response.custom_tool_call_input.done" : "response.function_call_arguments.done", {
         item_id: tool.itemId,
         output_index: tool.outputIndex,
-        arguments: tool.arguments,
+        [tool.custom ? "input" : "arguments"]: tool.custom ? item.input : tool.arguments,
       });
       this.event("response.output_item.done", { output_index: tool.outputIndex, item });
       this.output.push(item);
@@ -669,7 +697,7 @@ async function handleResponses(config, payload, res) {
     return;
   }
 
-  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null);
+  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null, customToolNames(payload.tools));
   writer.start();
   let usage = null;
   const contentType = upstream.headers.get("content-type") || "";
@@ -724,10 +752,27 @@ function handleAnthropicTokenCount(payload, res) {
   sendJson(res, 200, { input_tokens: approxTokens(text) });
 }
 
-function codexCatalogModel(config) {
+function loadCodexModelTemplate(home = os.homedir()) {
+  const cachePath = path.join(home, ".codex", "models_cache.json");
+  try {
+    const cache = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+    const models = Array.isArray(cache.models) ? cache.models : [];
+    return models.find((model) => model.shell_type === "shell_command") || null;
+  } catch {
+    return null;
+  }
+}
+
+function codexCatalogModel(config, home = os.homedir()) {
   const contextWindow = Number(config.upstream.contextWindow || config.upstream.context_window || 128000);
   const displayName = config.upstream.displayName || config.upstream.name || config.upstream.model;
-  return {
+  const inputModalities = Array.isArray(config.upstream.inputModalities)
+    ? config.upstream.inputModalities
+    : Array.isArray(config.upstream.input_modalities)
+      ? config.upstream.input_modalities
+      : ["text"];
+  const template = loadCodexModelTemplate(home);
+  const model = template ? JSON.parse(JSON.stringify(template)) : {
     slug: config.upstream.model,
     display_name: displayName,
     description: `${displayName} through LLM Coding Bridge.`,
@@ -769,6 +814,15 @@ function codexCatalogModel(config) {
     supports_search_tool: false,
     use_responses_lite: false,
   };
+  model.slug = config.upstream.model;
+  model.display_name = displayName;
+  model.description = `${displayName} through LLM Coding Bridge.`;
+  model.context_window = contextWindow;
+  model.max_context_window = contextWindow;
+  model.input_modalities = inputModalities;
+  model.supports_image_detail_original = inputModalities.includes("image");
+  model.priority = 1;
+  return model;
 }
 
 function startServer(config) {
@@ -795,10 +849,10 @@ function startServer(config) {
         await handleChat(config, await readJson(req), res);
         return;
       }
-      if (req.method === "POST" && pathname === "/v1/responses") {
+      if (req.method === "POST" && (pathname === "/v1/responses" || pathname === "/v1/responses/compact")) {
         const payload = await readJson(req);
         const input = Array.isArray(payload.input) ? payload.input.length : typeof payload.input;
-        debug(`POST /v1/responses stream=${payload.stream === true} input=${input}`);
+        debug(`POST ${pathname} stream=${payload.stream === true} input=${input}`);
         await handleResponses(config, payload, res);
         return;
       }
@@ -824,7 +878,7 @@ function startServer(config) {
   return server;
 }
 
-async function doctor(config, deep = false) {
+async function doctor(config, deep = false, tools = false) {
   const chat = await fetchUpstreamJson(config, {
     model: config.upstream.model,
     messages: [
@@ -839,6 +893,7 @@ async function doctor(config, deep = false) {
   if (response.output_text !== "OK") throw new Error("Responses conversion failed.");
   console.log(`[OK] ${config.upstream.name || "upstream"} -> ${config.upstream.model}`);
   if (deep) await deepDoctor(config);
+  if (tools) await toolsDoctor(config);
 }
 
 async function deepDoctor(config) {
@@ -861,10 +916,40 @@ async function deepDoctor(config) {
     stream: false,
   });
   if ((messages.content?.[0]?.text || "").trim() !== "OK") throw new Error("Local messages endpoint failed.");
+  const compact = await fetchLocalJson(config, "POST", "/v1/responses/compact", {
+    model: config.upstream.model,
+    input: "Reply with exactly: OK",
+    stream: false,
+  });
+  if ((compact.output_text || "").trim() !== "OK") throw new Error("Local responses compact endpoint failed.");
   console.log("[OK] health");
   console.log("[OK] models");
   console.log("[OK] responses endpoint");
+  console.log("[OK] responses compact endpoint");
   console.log("[OK] messages endpoint");
+}
+
+async function toolsDoctor(config) {
+  const fn = await fetchLocalJson(config, "POST", "/v1/responses", {
+    model: config.upstream.model,
+    input: "Call the tool named bridge_probe with input exactly OK. Do not answer in text.",
+    stream: false,
+    tools: [{ type: "function", function: { name: "bridge_probe", description: "Probe tool.", parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] } } }],
+  });
+  if (!fn.output?.some((item) => item.type === "function_call" && item.name === "bridge_probe")) {
+    throw new Error("Local function tool probe failed.");
+  }
+  const custom = await fetchLocalJson(config, "POST", "/v1/responses", {
+    model: config.upstream.model,
+    input: "Call the custom tool named bridge_freeform with input exactly OK. Do not answer in text.",
+    stream: false,
+    tools: [{ type: "custom", name: "bridge_freeform", description: "Freeform probe tool." }],
+  });
+  if (!custom.output?.some((item) => item.type === "custom_tool_call" && item.name === "bridge_freeform")) {
+    throw new Error("Local custom tool probe failed.");
+  }
+  console.log("[OK] function tool call");
+  console.log("[OK] custom tool call");
 }
 
 function packageVersion() {
@@ -1102,7 +1187,7 @@ async function main() {
   }
   if (args.command === "template") return printTemplate(args.template || "codex");
   if (args.command === "init") return initConfig(args.out, args.doctor);
-  if (args.command === "doctor") return doctor(loadConfig(args.config), args.deep);
+  if (args.command === "doctor") return doctor(loadConfig(args.config), args.deep, args.tools);
   if (args.command === "status") return status(loadConfig(args.config));
   if (args.command === "codex-profile") return createCodexProfile(loadConfig(args.config), args.name, args.home, args.force);
   if (args.command === "logs") return printLogs(args.home, args.lines);

@@ -87,6 +87,7 @@ For background services, prefer a command-backed key so launchd does not depend 
 
 ```bash
 llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
 llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
 ```
 
@@ -101,6 +102,8 @@ For a local service check that does not call the upstream model:
 ```bash
 llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 ```
+
+`doctor --tools` verifies Codex-style function and freeform tool calls through the bridge.
 
 ## Codex
 
@@ -251,6 +254,7 @@ llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```bash
 export LLM_API_KEY="..."
 llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
 llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 ```
 

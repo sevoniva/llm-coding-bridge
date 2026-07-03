@@ -92,6 +92,18 @@ Generated config:
 
 Do not store API keys in this file.
 
+Optional vision metadata:
+
+```json
+{
+  "upstream": {
+    "inputModalities": ["text", "image"]
+  }
+}
+```
+
+Keep the default `["text"]` unless the upstream model can process image input.
+
 ## 3. API Key Options
 
 ### Environment Variable
@@ -189,6 +201,12 @@ Full endpoint check:
 
 ```bash
 llm-coding-bridge doctor --deep --config ~/.llm-coding-bridge/config.json
+```
+
+Tool-call check:
+
+```bash
+llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
 ```
 
 ## 5. Configure Codex
@@ -564,6 +582,18 @@ Set key: export LLM_API_KEY="..."
 
 配置文件不保存 API Key。
 
+可选视觉能力声明：
+
+```json
+{
+  "upstream": {
+    "inputModalities": ["text", "image"]
+  }
+}
+```
+
+除非上游模型确认支持图片输入，否则保持默认 `["text"]`。
+
 ## 3. API Key 配置
 
 ### 环境变量
@@ -659,6 +689,12 @@ llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 
 ```bash
 llm-coding-bridge doctor --deep --config ~/.llm-coding-bridge/config.json
+```
+
+工具调用检测：
+
+```bash
+llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
 ```
 
 ## 5. 配置 Codex
