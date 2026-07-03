@@ -70,6 +70,38 @@ API keys are not stored in the config file:
 export LLM_API_KEY="..."
 ```
 
+## Multiple upstreams
+
+Route requests to different providers by the `model` field the client sends. Use `upstreams` instead of `upstream`:
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080 },
+  "upstreams": [
+    { "name": "OpenAI", "model": "gpt-4o", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" },
+    { "name": "Other", "model": "other-model", "baseUrl": "https://api.other.com/v1", "apiKeyEnv": "OTHER_API_KEY" }
+  ]
+}
+```
+
+A request with `model: "gpt-4o"` routes to OpenAI; `model: "other-model"` routes to Other. Unknown models fall back to the first upstream. `/v1/models` lists all configured models.
+
+## Local auth
+
+By default the bridge listens on `127.0.0.1` and does not require auth. To require a token (strongly recommended when binding to a non-loopback address), set `server.localToken`:
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080, "localToken": "your-secret" }
+}
+```
+
+Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time.
+
+## API key caching
+
+`apiKeyCommand` results are cached in-process for 10 minutes by default to avoid spawning a command on every request. Override with `upstream.apiKeyCacheTtlMs`. Each upstream in a multi-upstream config has an independent cache.
+
 For background services, prefer a command-backed key so launchd does not depend on shell environment variables:
 
 ```json
@@ -332,6 +364,10 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```bash
 llm-coding-bridge logs --lines 80
 ```
+
+多上游路由：用 `upstreams` 数组替代 `upstream`，按客户端请求的 `model` 字段路由到不同上游。详见上方 "Multiple upstreams"。
+
+本地鉴权：配置 `server.localToken` 后，请求须带 `Authorization: Bearer <token>` 或 `x-api-key: <token>`，绑非 loopback 时强烈建议启用。
 
 ## Security
 
