@@ -103,7 +103,7 @@ For a local service check that does not call the upstream model:
 llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 ```
 
-`doctor --tools` verifies Codex-style function and freeform tool calls through the bridge.
+`doctor --tools` verifies Codex-style function, freeform, and tool-search calls through the bridge.
 
 ## Codex
 

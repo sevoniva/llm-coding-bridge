@@ -1,6 +1,6 @@
 {
   "name": "@sevoniva/llm-coding-bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Local bridge for using OpenAI-compatible chat completion providers with coding clients.",
   "license": "MIT",
   "type": "commonjs",

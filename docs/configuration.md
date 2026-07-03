@@ -209,6 +209,8 @@ Tool-call check:
 llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
 ```
 
+This verifies function, freeform, and tool-search conversion through the local bridge.
+
 ## 5. Configure Codex
 
 Print the template:
@@ -696,6 +698,8 @@ llm-coding-bridge doctor --deep --config ~/.llm-coding-bridge/config.json
 ```bash
 llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
 ```
+
+该命令会验证 function、freeform 和 tool-search 的本地转换链路。
 
 ## 5. 配置 Codex
 

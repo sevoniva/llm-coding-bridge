@@ -69,12 +69,19 @@ async function main() {
       upstreamRequests += 1;
       const payload = JSON.parse(raw);
       const prompt = payload.messages[payload.messages.length - 1].content;
-      const tool = (payload.tools || []).map((item) => item.function).find((item) => item?.name === "bridge_probe" || item?.name === "bridge_freeform");
+      const tool = (payload.tools || []).map((item) => item.function).find((item) => item?.name === "bridge_probe" || item?.name === "bridge_freeform" || item?.name === "tool_search");
       if (tool) {
-        const message = { role: "assistant", content: null, tool_calls: [{ id: "call_probe", type: "function", function: { name: tool.name, arguments: JSON.stringify({ input: "OK" }) } }] };
+        const args = tool.name === "tool_search" ? { query: "Gmail search emails" } : { input: "OK" };
+        const message = { role: "assistant", content: null, tool_calls: [{ id: "call_probe", type: "function", function: { name: tool.name, arguments: JSON.stringify(args) } }] };
         if (payload.stream) {
           res.writeHead(200, { "Content-Type": "text/event-stream" });
-          sse(res, { id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_probe", type: "function", function: { name: tool.name, arguments: JSON.stringify({ input: "OK" }) } }] }, finish_reason: "tool_calls" }] });
+          sse(res, { id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_probe", type: "function", function: { name: tool.name } }] } }] });
+          if (tool.name === "tool_search") {
+            sse(res, { id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }] });
+          } else {
+            sse(res, { id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "{\"input\":" } }] } }] });
+            sse(res, { id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\"OK\"}" } }] }, finish_reason: "tool_calls" }] });
+          }
           res.write("data: [DONE]\n\n");
           res.end();
           return;
@@ -180,6 +187,26 @@ async function main() {
   assert.equal(customTool.output[0].name, "bridge_freeform");
   assert.equal(customTool.output[0].input, "OK");
 
+  const customStream = await requestText(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+    model: "client-model",
+    input: "stream custom tool",
+    stream: true,
+    tools: [{ type: "custom", name: "bridge_freeform", description: "Freeform tool" }],
+  });
+  assert.match(customStream, /response.custom_tool_call_input.delta/);
+  assert.match(customStream, /"delta":"OK"/);
+  assert.doesNotMatch(customStream, /"delta":"\\{\\"input\\"/);
+
+  const searchTool = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+    model: "client-model",
+    input: "search tools",
+    stream: false,
+    tools: [{ type: "tool_search" }],
+  });
+  assert.equal(searchTool.output[0].type, "tool_search_call");
+  assert.equal(searchTool.output[0].execution, "client");
+  assert.equal(searchTool.output[0].arguments.query, "Gmail search emails");
+
   const models = await fetch(`http://127.0.0.1:${bridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
   assert.equal(models.status, 200);
   const modelsBody = await models.json();
@@ -231,6 +258,7 @@ async function main() {
   assert.equal(toolsDoctor.code, 0, toolsDoctor.stderr || toolsDoctor.stdout);
   assert.match(toolsDoctor.stdout, /function tool call/);
   assert.match(toolsDoctor.stdout, /custom tool call/);
+  assert.match(toolsDoctor.stdout, /tool-search call/);
 
   const profileHome = path.join(tmp, "profile-home");
   const profile = await runCli(cli, ["codex-profile", "--config", configPath, "--name", "bridge", "--home", profileHome]);

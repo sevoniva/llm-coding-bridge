@@ -185,11 +185,11 @@ function responsesInputToMessages(payload) {
       messages.push({ role: "tool", tool_call_id: item.call_id, content: String(item.output || "") });
       continue;
     }
-    if (item.type === "custom_tool_call_output") {
+    if (item.type === "custom_tool_call_output" || item.type === "tool_search_output") {
       messages.push({ role: "tool", tool_call_id: item.call_id, content: String(item.output || "") });
       continue;
     }
-    if (item.type === "function_call" || item.type === "custom_tool_call") {
+    if (item.type === "function_call" || item.type === "custom_tool_call" || item.type === "tool_search_call") {
       messages.push({
         role: "assistant",
         content: null,
@@ -197,7 +197,10 @@ function responsesInputToMessages(payload) {
           {
             id: item.call_id || item.id || `call_${randomUUID()}`,
             type: "function",
-            function: { name: item.name, arguments: item.arguments || JSON.stringify({ input: item.input || "" }) },
+            function: {
+              name: item.type === "tool_search_call" ? "tool_search" : item.name,
+              arguments: item.type === "tool_search_call" ? toolArgumentsString(item.arguments) : item.arguments || JSON.stringify({ input: item.input || "" }),
+            },
           },
         ],
       });
@@ -215,13 +218,15 @@ function responsesInputToMessages(payload) {
 function convertTools(tools) {
   if (!Array.isArray(tools)) return undefined;
   const converted = tools
-    .filter((tool) => tool?.type === "function" || tool?.type === "custom" || tool?.name)
+    .filter((tool) => tool?.type === "function" || tool?.type === "custom" || tool?.type === "tool_search" || tool?.name)
     .map((tool) => ({
       type: "function",
       function: tool.function || {
-        name: tool.name,
+        name: tool.type === "tool_search" ? "tool_search" : tool.name,
         description: tool.description || "",
-        parameters: tool.parameters || { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+        parameters: tool.parameters || (tool.type === "tool_search"
+          ? { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+          : { type: "object", properties: { input: { type: "string" } }, required: ["input"] }),
       },
     }));
   return converted.length ? converted : undefined;
@@ -231,6 +236,10 @@ function customToolNames(tools) {
   return new Set((Array.isArray(tools) ? tools : []).filter((tool) => tool?.type === "custom").map((tool) => tool.name).filter(Boolean));
 }
 
+function toolSearchNames(tools) {
+  return new Set((Array.isArray(tools) ? tools : []).filter((tool) => tool?.type === "tool_search").map(() => "tool_search"));
+}
+
 function toolInputFromArguments(value) {
   const raw = String(value || "");
   try {
@@ -238,6 +247,30 @@ function toolInputFromArguments(value) {
     if (parsed && typeof parsed === "object" && typeof parsed.input === "string") return parsed.input;
   } catch {}
   return raw;
+}
+
+function parsedToolInput(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && typeof parsed.input === "string" ? parsed.input : null;
+  } catch {
+    return null;
+  }
+}
+
+function toolArgumentsString(value, fallback = "{}") {
+  if (typeof value === "string") return value || fallback;
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return fallback;
+}
+
+function parseToolArguments(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function responsesToChatPayload(config, payload) {
@@ -256,7 +289,7 @@ function responsesToChatPayload(config, payload) {
   return chat;
 }
 
-function buildResponsesOutput(message, customNames = new Set()) {
+function buildResponsesOutput(message, customNames = new Set(), searchNames = new Set()) {
   const output = [];
   const text = message?.content || "";
   if (text) {
@@ -270,6 +303,16 @@ function buildResponsesOutput(message, customNames = new Set()) {
   }
   for (const call of message?.tool_calls || []) {
     const name = call.function?.name || call.name;
+    if (searchNames.has(name)) {
+      output.push({
+        type: "tool_search_call",
+        status: "completed",
+        call_id: call.id || `call_${randomUUID()}`,
+        execution: "client",
+        arguments: parseToolArguments(call.function?.arguments || call.arguments),
+      });
+      continue;
+    }
     if (customNames.has(name)) {
       output.push({
         id: call.id || `ctc_${randomUUID()}`,
@@ -443,10 +486,11 @@ function streamAnthropic(res, message) {
 }
 
 class ResponsesWriter {
-  constructor(model, res = null, customNames = new Set()) {
+  constructor(model, res = null, customNames = new Set(), searchNames = new Set()) {
     this.model = model;
     this.res = res;
     this.customNames = customNames;
+    this.searchNames = searchNames;
     this.id = `resp_${randomUUID()}`;
     this.createdAt = Math.floor(Date.now() / 1000);
     this.sequence = 0;
@@ -565,20 +609,25 @@ class ResponsesWriter {
     this.finishMessage();
     if (!this.tools.has(index)) {
       const custom = this.customNames.has(name);
+      const search = this.searchNames.has(name);
       const tool = {
         itemId: `${custom ? "ctc" : "fc"}_${randomUUID()}`,
         callId: callId || `call_${randomUUID()}`,
         name: name || "",
         arguments: "",
+        input: "",
         outputIndex: this.nextOutputIndex,
         custom,
+        search,
       };
       this.nextOutputIndex += 1;
       this.tools.set(index, tool);
       this.toolOrder.push(index);
       this.event("response.output_item.added", {
         output_index: tool.outputIndex,
-        item: tool.custom
+        item: tool.search
+          ? { type: "tool_search_call", status: "in_progress", call_id: tool.callId, execution: "client", arguments: {} }
+          : tool.custom
           ? { id: tool.itemId, type: "custom_tool_call", status: "in_progress", call_id: tool.callId, name: tool.name, input: "" }
           : { id: tool.itemId, type: "function_call", status: "in_progress", call_id: tool.callId, name: tool.name, arguments: "" },
       });
@@ -588,13 +637,28 @@ class ResponsesWriter {
     if (name) {
       tool.name = name;
       tool.custom ||= this.customNames.has(name);
+      tool.search ||= this.searchNames.has(name);
     }
     if (argumentsDelta) {
       tool.arguments += argumentsDelta;
-      this.event(tool.custom ? "response.custom_tool_call_input.delta" : "response.function_call_arguments.delta", {
+      if (tool.search) return;
+      if (tool.custom) {
+        const input = parsedToolInput(tool.arguments);
+        if (input === null) return;
+        const delta = input.slice(tool.input.length);
+        tool.input = input;
+        if (!delta) return;
+        this.event("response.custom_tool_call_input.delta", {
+          item_id: tool.itemId,
+          output_index: tool.outputIndex,
+          delta,
+        });
+        return;
+      }
+      this.event("response.function_call_arguments.delta", {
         item_id: tool.itemId,
         output_index: tool.outputIndex,
-        delta: tool.custom ? toolInputFromArguments(tool.arguments) : argumentsDelta,
+        delta: argumentsDelta,
       });
     }
   }
@@ -602,14 +666,18 @@ class ResponsesWriter {
   finishTools() {
     for (const index of this.toolOrder) {
       const tool = this.tools.get(index);
-      const item = tool.custom
+      const item = tool.search
+        ? { type: "tool_search_call", status: "completed", call_id: tool.callId, execution: "client", arguments: parseToolArguments(tool.arguments) }
+        : tool.custom
         ? { id: tool.itemId, type: "custom_tool_call", status: "completed", call_id: tool.callId, name: tool.name, input: toolInputFromArguments(tool.arguments) }
         : { id: tool.itemId, type: "function_call", status: "completed", call_id: tool.callId, name: tool.name, arguments: tool.arguments };
-      this.event(tool.custom ? "response.custom_tool_call_input.done" : "response.function_call_arguments.done", {
-        item_id: tool.itemId,
-        output_index: tool.outputIndex,
-        [tool.custom ? "input" : "arguments"]: tool.custom ? item.input : tool.arguments,
-      });
+      if (!tool.search) {
+        this.event(tool.custom ? "response.custom_tool_call_input.done" : "response.function_call_arguments.done", {
+          item_id: tool.itemId,
+          output_index: tool.outputIndex,
+          [tool.custom ? "input" : "arguments"]: tool.custom ? item.input : tool.arguments,
+        });
+      }
       this.event("response.output_item.done", { output_index: tool.outputIndex, item });
       this.output.push(item);
     }
@@ -697,7 +765,7 @@ async function handleResponses(config, payload, res) {
     return;
   }
 
-  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null, customToolNames(payload.tools));
+  const writer = new ResponsesWriter(config.upstream.model, payload.stream ? res : null, customToolNames(payload.tools), toolSearchNames(payload.tools));
   writer.start();
   let usage = null;
   const contentType = upstream.headers.get("content-type") || "";
@@ -948,8 +1016,18 @@ async function toolsDoctor(config) {
   if (!custom.output?.some((item) => item.type === "custom_tool_call" && item.name === "bridge_freeform")) {
     throw new Error("Local custom tool probe failed.");
   }
+  const search = await fetchLocalJson(config, "POST", "/v1/responses", {
+    model: config.upstream.model,
+    input: "Call the tool_search tool with query exactly bridge probe. Do not answer in text.",
+    stream: false,
+    tools: [{ type: "tool_search" }],
+  });
+  if (!search.output?.some((item) => item.type === "tool_search_call" && item.arguments?.query)) {
+    throw new Error("Local tool-search probe failed.");
+  }
   console.log("[OK] function tool call");
   console.log("[OK] custom tool call");
+  console.log("[OK] tool-search call");
 }
 
 function packageVersion() {
