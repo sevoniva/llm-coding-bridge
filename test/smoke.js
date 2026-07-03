@@ -442,6 +442,50 @@ async function main() {
   nocacheBridge.kill("SIGTERM");
   await new Promise((resolve) => nocacheBridge.on("close", resolve));
 
+  // apiKey 缓存 401 失效：第一次 key 错 401 → bust → 第二次 key 对 200
+  const rotateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "lcb-rot-"));
+  const rotateCounter = path.join(rotateTmp, "n");
+  const rotateScript = path.join(rotateTmp, "key.sh");
+  // 第一次返回 wrong-key，第二次起返回 right-key
+  fs.writeFileSync(rotateScript, `#!/bin/sh\nn=$(cat "${rotateCounter}" 2>/dev/null || echo 0)\nn=$((n+1))\necho "$n" > "${rotateCounter}"\nif [ "$n" = "1" ]; then echo "wrong-key"; else echo "right-key"; fi\n`);
+  fs.chmodSync(rotateScript, 0o755);
+  const rotateUpstream = http.createServer((req, res) => {
+    let raw = ""; req.setEncoding("utf8"); req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      const auth = req.headers.authorization || "";
+      if (auth !== "Bearer right-key") { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "bad key" })); return; }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "r", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] }));
+    });
+  });
+  await new Promise((resolve) => rotateUpstream.listen(0, "127.0.0.1", resolve));
+  rotateUpstream.unref();
+  const rotatePort = rotateUpstream.address().port;
+  const rotateConfigPath = path.join(rotateTmp, "rotate.config.json");
+  const rotateBridgePort = upstreamPort + 9;
+  fs.writeFileSync(rotateConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: rotateBridgePort },
+    upstream: { name: "u", baseUrl: `http://127.0.0.1:${rotatePort}/v1`, model: "m", apiKeyCommand: { command: rotateScript, args: [] } },
+  }, null, 2));
+  const rotateBridge = spawn(process.execPath, [cli, "serve", "--config", rotateConfigPath], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try { const h = await fetch(`http://127.0.0.1:${rotateBridgePort}/health`); if (h.status === 200) break; } catch {}
+    await wait(100);
+  }
+  const rotateFirst = await requestRaw(`http://127.0.0.1:${rotateBridgePort}/v1/chat/completions`, {
+    model: "m", messages: [{ role: "user", content: "hello" }], stream: false,
+  });
+  assert.equal(rotateFirst.status, 401);
+  const rotateSecond = await requestJson(`http://127.0.0.1:${rotateBridgePort}/v1/chat/completions`, {
+    model: "m", messages: [{ role: "user", content: "hello" }], stream: false,
+  });
+  assert.equal(rotateSecond.choices[0].message.content, "OK");
+  rotateBridge.kill("SIGTERM");
+  await new Promise((resolve) => rotateBridge.on("close", resolve));
+  await new Promise((resolve) => rotateUpstream.close(resolve));
+
   // 可选本地 token 鉴权
   const authConfigPath = path.join(tmp, "auth.config.json");
   const authBridgePort = upstreamPort + 3;
