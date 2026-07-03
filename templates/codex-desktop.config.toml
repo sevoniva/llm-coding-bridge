@@ -1,5 +1,5 @@
-# Save as ~/.codex/bridge.config.toml for `codex --profile bridge`.
-# Use `llm-coding-bridge template codex-desktop` for Codex Desktop defaults.
+# Add or update these keys in ~/.codex/config.toml to make Codex Desktop use the bridge.
+# Back up ~/.codex/config.toml before changing it.
 model = "your-model"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"

@@ -192,6 +192,8 @@ User-level Codex config example:
 ```toml
 model = "model-name"
 model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -204,12 +206,14 @@ stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
 
-Use a separate Codex profile if you do not want to change the default provider:
+Use a separate Codex CLI profile if you do not want to change the default provider:
 
 ```toml
 # ~/.codex/bridge.config.toml
 model = "model-name"
 model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -221,6 +225,15 @@ request_max_retries = 1
 stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
+
+Create the profile from the template:
+
+```bash
+mkdir -p ~/.codex
+llm-coding-bridge template codex > ~/.codex/bridge.config.toml
+```
+
+Edit `~/.codex/bridge.config.toml` and set `model = "model-name"` to your upstream model ID.
 
 Run Codex CLI with the profile:
 
@@ -231,10 +244,60 @@ codex --profile bridge
 Non-interactive check:
 
 ```bash
-codex exec --skip-git-repo-check "Reply exactly: OK"
+codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
-Codex Desktop uses the same user-level provider configuration. Restart the desktop app after changing `~/.codex/config.toml` or a profile file.
+The startup summary should show:
+
+```text
+provider: llm-coding-bridge
+```
+
+If it shows `provider: openai`, Codex did not load the profile. Confirm the file is named exactly `~/.codex/bridge.config.toml`.
+
+### Codex Desktop
+
+Codex Desktop uses the default user-level config. To make Codex Desktop use the bridge, add the provider block and the top-level model settings to `~/.codex/config.toml`.
+
+Keep the bridge running before opening Codex Desktop. On macOS, install the launchd service:
+
+```bash
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+curl http://127.0.0.1:18080/health
+```
+
+Back up the file first:
+
+```bash
+cp ~/.codex/config.toml ~/.codex/config.toml.bak.$(date +%Y%m%d%H%M%S)
+```
+
+Print the Desktop template:
+
+```bash
+llm-coding-bridge template codex-desktop
+```
+
+Add or update these values in `~/.codex/config.toml`:
+
+```toml
+model = "model-name"
+model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+```
+
+Restart Codex Desktop after the change. This makes the bridge the default provider for Codex Desktop and for Codex CLI sessions that do not pass `--profile`.
 
 ## 6. Configure Claude Code
 
@@ -571,6 +634,8 @@ Codex 用户级配置示例：
 ```toml
 model = "model-name"
 model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -583,12 +648,14 @@ stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
 
-如果不想影响默认 Codex 配置，建议使用独立 profile：
+如果不想影响默认 Codex 配置，Codex CLI 建议使用独立 profile：
 
 ```toml
 # ~/.codex/bridge.config.toml
 model = "model-name"
 model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -600,6 +667,15 @@ request_max_retries = 1
 stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
+
+从模板创建 profile：
+
+```bash
+mkdir -p ~/.codex
+llm-coding-bridge template codex > ~/.codex/bridge.config.toml
+```
+
+编辑 `~/.codex/bridge.config.toml`，把 `model = "model-name"` 改成上游模型 ID。
 
 使用 profile 启动：
 
@@ -610,10 +686,60 @@ codex --profile bridge
 非交互检测：
 
 ```bash
-codex exec --skip-git-repo-check "Reply exactly: OK"
+codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
-Codex Desktop 使用同一套用户级 provider 配置。修改 `~/.codex/config.toml` 或 profile 文件后，需要重启桌面端。
+启动摘要中应看到：
+
+```text
+provider: llm-coding-bridge
+```
+
+如果看到 `provider: openai`，说明 Codex 没有加载 profile。检查文件名是否为 `~/.codex/bridge.config.toml`。
+
+### Codex Desktop
+
+Codex Desktop 使用默认用户级配置。要让 Codex Desktop 使用 bridge，需要把 provider 配置和顶部模型设置写入 `~/.codex/config.toml`。
+
+打开 Codex Desktop 前，先保证 bridge 在后台运行。macOS 可安装 launchd 服务：
+
+```bash
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+curl http://127.0.0.1:18080/health
+```
+
+先备份配置：
+
+```bash
+cp ~/.codex/config.toml ~/.codex/config.toml.bak.$(date +%Y%m%d%H%M%S)
+```
+
+输出 Desktop 模板：
+
+```bash
+llm-coding-bridge template codex-desktop
+```
+
+把这些配置添加或更新到 `~/.codex/config.toml`：
+
+```toml
+model = "model-name"
+model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+```
+
+修改后重启 Codex Desktop。这样会把 bridge 作为 Codex Desktop 默认 provider，也会影响没有使用 `--profile` 的 Codex CLI 会话。
 
 ## 6. 配置 Claude Code
 

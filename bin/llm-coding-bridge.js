@@ -14,6 +14,7 @@ const DEFAULT_CONFIG = "llm-coding-bridge.config.json";
 function parseArgs(argv) {
   const command = argv[0] && !argv[0].startsWith("-") ? argv.shift() : "help";
   const args = { command, config: DEFAULT_CONFIG, out: DEFAULT_CONFIG, name: "llm-coding-bridge" };
+  if (command === "template" && argv[0] && !argv[0].startsWith("-")) args.template = argv.shift();
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--config" || arg === "-c") args.config = argv[++i];
@@ -32,6 +33,7 @@ function usage() {
   llm-coding-bridge serve --config llm-coding-bridge.config.json
   llm-coding-bridge doctor --config llm-coding-bridge.config.json
   llm-coding-bridge template codex
+  llm-coding-bridge template codex-desktop
   llm-coding-bridge template claude
   llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
   llm-coding-bridge uninstall-service`;
@@ -824,7 +826,9 @@ function createPrompt() {
 }
 
 function printTemplate(name) {
-  const file = name === "claude" || name === "claude-code" ? "claude-code.env" : "codex.config.toml";
+  let file = "codex.config.toml";
+  if (name === "claude" || name === "claude-code") file = "claude-code.env";
+  if (name === "codex-desktop") file = "codex-desktop.config.toml";
   process.stdout.write(fs.readFileSync(path.join(__dirname, "..", "templates", file), "utf8"));
 }
 
@@ -873,7 +877,7 @@ async function main() {
     console.log(usage());
     return;
   }
-  if (args.command === "template") return printTemplate(process.argv[3] || "codex");
+  if (args.command === "template") return printTemplate(args.template || "codex");
   if (args.command === "init") return initConfig(args.out, args.doctor);
   if (args.command === "doctor") return doctor(loadConfig(args.config));
   if (args.command === "serve") return startServer(loadConfig(args.config));

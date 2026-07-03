@@ -109,6 +109,8 @@ Minimal Codex config:
 ```toml
 model = "your-model"
 model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -122,6 +124,40 @@ stream_idle_timeout_ms = 600000
 ```
 
 Use this as a separate Codex profile if you do not want to change your default Codex Desktop setup.
+
+For Codex CLI, save the template as a profile:
+
+```bash
+mkdir -p ~/.codex
+llm-coding-bridge template codex > ~/.codex/bridge.config.toml
+# Edit ~/.codex/bridge.config.toml and set model = "your-model"
+codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
+```
+
+The check should show:
+
+```text
+provider: llm-coding-bridge
+```
+
+If it shows `provider: openai`, Codex did not load the profile. Confirm the file is named exactly `~/.codex/bridge.config.toml`.
+
+For Codex Desktop, keep the bridge running in the background. On macOS, install the launchd service:
+
+```bash
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+curl http://127.0.0.1:18080/health
+```
+
+Then back up `~/.codex/config.toml`, place the same provider block and top-level `model` / `model_provider` values in `~/.codex/config.toml`, and restart Codex Desktop.
+
+Print the Codex Desktop template:
+
+```bash
+llm-coding-bridge template codex-desktop
+```
+
+Use this when you want the bridge as the default provider for Codex Desktop and for CLI sessions that do not pass `--profile`.
 
 ## Claude
 
@@ -209,6 +245,40 @@ Codex 的 `base_url` 配为：
 ```text
 http://127.0.0.1:18080/v1
 ```
+
+Codex CLI 建议用独立 profile，避免影响默认配置：
+
+```bash
+mkdir -p ~/.codex
+llm-coding-bridge template codex > ~/.codex/bridge.config.toml
+# 编辑 ~/.codex/bridge.config.toml，把 model 改成你的上游模型
+codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
+```
+
+输出中应看到：
+
+```text
+provider: llm-coding-bridge
+```
+
+如果仍是 `provider: openai`，说明 profile 没有加载。检查文件名是否为 `~/.codex/bridge.config.toml`。
+
+Codex Desktop 使用前要保证 bridge 在后台运行。macOS 可安装 launchd 服务：
+
+```bash
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+curl http://127.0.0.1:18080/health
+```
+
+然后备份 `~/.codex/config.toml`，把同一段 provider 配置和顶部的 `model` / `model_provider` 写入 `~/.codex/config.toml`，修改后重启桌面端。
+
+输出 Codex Desktop 模板：
+
+```bash
+llm-coding-bridge template codex-desktop
+```
+
+需要把 bridge 配成 Codex Desktop 默认 provider 时使用这个模板。它也会影响没有使用 `--profile` 的 Codex CLI 会话。
 
 Claude 类客户端配置：
 

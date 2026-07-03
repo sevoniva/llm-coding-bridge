@@ -183,6 +183,17 @@ async function main() {
   assert.equal(initConfig.upstream.name, "Example Provider");
   assert.equal(initConfig.upstream.apiKeyEnv, "EXAMPLE_API_KEY");
 
+  for (const templateName of ["codex", "codex-desktop", "claude"]) {
+    const template = spawn(process.execPath, [cli, "template", templateName], { stdio: ["ignore", "pipe", "pipe"] });
+    let templateOut = "";
+    let templateErr = "";
+    template.stdout.on("data", (chunk) => { templateOut += chunk; });
+    template.stderr.on("data", (chunk) => { templateErr += chunk; });
+    const templateCode = await new Promise((resolve) => template.on("close", resolve));
+    assert.equal(templateCode, 0, templateErr || templateOut);
+    assert.ok(templateOut.length > 0);
+  }
+
   assert.ok(upstreamRequests >= 4);
   bridge.kill("SIGTERM");
   await new Promise((resolve) => bridge.on("close", resolve));
