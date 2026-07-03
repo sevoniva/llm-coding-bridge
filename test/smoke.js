@@ -340,6 +340,46 @@ async function main() {
   }
 
   assert.ok(upstreamRequests >= 4);
+
+  // apiKeyCommand 缓存：多次请求只 spawn 一次
+  const cmdTmp = fs.mkdtempSync(path.join(os.tmpdir(), "lcb-cmd-"));
+  const counterFile = path.join(cmdTmp, "count");
+  const cmdScript = path.join(cmdTmp, "key.sh");
+  fs.writeFileSync(cmdScript, `#!/bin/sh\necho x >> "${counterFile}"\necho "cmd-key"\n`);
+  fs.chmodSync(cmdScript, 0o755);
+  const cmdConfigPath = path.join(cmdTmp, "bridge.config.json");
+  const cmdBridgePort = upstreamPort + 2;
+  fs.writeFileSync(cmdConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: cmdBridgePort },
+    upstream: {
+      name: "fake-upstream",
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      model: "fake-model",
+      apiKeyCommand: { command: cmdScript, args: [] },
+    },
+  }, null, 2));
+  const cmdBridge = spawn(process.execPath, [cli, "serve", "--config", cmdConfigPath], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try {
+      const h = await fetch(`http://127.0.0.1:${cmdBridgePort}/health`);
+      if (h.status === 200) break;
+    } catch {}
+    await wait(100);
+  }
+  for (let i = 0; i < 3; i += 1) {
+    await requestJson(`http://127.0.0.1:${cmdBridgePort}/v1/chat/completions`, {
+      model: "fake-model",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+  }
+  const count = fs.readFileSync(counterFile, "utf8").trim().split("\n").length;
+  assert.equal(count, 1, `apiKeyCommand should spawn once, got ${count}`);
+  cmdBridge.kill("SIGTERM");
+  await new Promise((resolve) => cmdBridge.on("close", resolve));
+
   bridge.kill("SIGTERM");
   await new Promise((resolve) => bridge.on("close", resolve));
   await new Promise((resolve) => upstream.close(resolve));

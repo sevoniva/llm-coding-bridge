@@ -63,7 +63,10 @@ function loadConfig(file) {
   return { path: configPath, server, upstream };
 }
 
-function getApiKey(upstream) {
+const apiKeyCache = new Map();
+const DEFAULT_API_KEY_TTL_MS = 10 * 60 * 1000;
+
+function resolveApiKey(upstream) {
   if (upstream.apiKeyEnv && process.env[upstream.apiKeyEnv]) {
     return process.env[upstream.apiKeyEnv];
   }
@@ -82,6 +85,15 @@ function getApiKey(upstream) {
   const token = result.stdout.trim();
   if (!token) throw new Error("apiKeyCommand returned an empty token.");
   return token;
+}
+
+function getApiKey(upstream) {
+  const ttl = Number(upstream.apiKeyCacheTtlMs || DEFAULT_API_KEY_TTL_MS);
+  const cached = apiKeyCache.get(upstream);
+  if (cached && Date.now() - cached.ts < ttl) return cached.value;
+  const value = resolveApiKey(upstream);
+  apiKeyCache.set(upstream, { value, ts: Date.now() });
+  return value;
 }
 
 function upstreamUrl(upstream) {
