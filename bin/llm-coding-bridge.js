@@ -78,7 +78,7 @@ function getApiKey(upstream) {
       : spawnSync(command.command, command.args || [], { encoding: "utf8" });
 
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`apiKeyCommand exited with ${result.status}: ${result.stderr.trim()}`);
+  if (result.status !== 0) throw new Error(`apiKeyCommand exited with ${result.status}.`);
   const token = result.stdout.trim();
   if (!token) throw new Error("apiKeyCommand returned an empty token.");
   return token;
@@ -126,6 +126,15 @@ function debug(message) {
   if (process.env.LLM_CODING_BRIDGE_DEBUG) console.error(`[debug] ${message}`);
 }
 
+function safeErrorMessage(error) {
+  const message = error?.message || String(error || "Error");
+  return String(message)
+    .replace(/Bearer\s+[^\s"']+/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9]{8,}\b/g, "[redacted]")
+    .replace(/\b(api[_-]?key|authorization|x-api-key)(["'\s:=]+)([^"',\s}]+)/gi, "$1$2[redacted]")
+    .slice(0, 300);
+}
+
 function writeSse(res, event, body) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(body)}\n\n`);
@@ -154,7 +163,7 @@ async function fetchUpstream(config, payload) {
 async function fetchUpstreamJson(config, payload) {
   const response = await fetchUpstream(config, { ...payload, stream: false });
   const text = await response.text();
-  if (!response.ok) throw new Error(`Upstream HTTP ${response.status}: ${text.slice(0, 300)}`);
+  if (!response.ok) throw new Error(`Upstream HTTP ${response.status}.`);
   return JSON.parse(text);
 }
 
@@ -733,7 +742,8 @@ async function handleChat(config, payload, res) {
   const upstreamPayload = { ...payload, model: config.upstream.model };
   const upstream = await fetchUpstream(config, upstreamPayload);
   if (!upstream.ok) {
-    sendJson(res, upstream.status, { error: { message: await upstream.text(), type: "upstream_error" } });
+    await upstream.text();
+    sendJson(res, upstream.status, { error: { message: `Upstream HTTP ${upstream.status}.`, type: "upstream_error" } });
     return;
   }
   if (!payload.stream) {
@@ -761,7 +771,8 @@ async function handleResponses(config, payload, res) {
   );
   const upstream = await fetchUpstream(config, chatPayload);
   if (!upstream.ok) {
-    sendJson(res, upstream.status, { error: { message: await upstream.text(), type: "upstream_error" } });
+    await upstream.text();
+    sendJson(res, upstream.status, { error: { message: `Upstream HTTP ${upstream.status}.`, type: "upstream_error" } });
     return;
   }
 
@@ -936,7 +947,7 @@ function startServer(config) {
       }
       sendJson(res, 404, { error: { message: `Not found: ${req.method} ${req.url}`, type: "not_found" } });
     } catch (error) {
-      sendJson(res, 500, { error: { message: error.message || String(error), type: "bridge_error" } });
+      sendJson(res, 500, { error: { message: safeErrorMessage(error), type: "bridge_error" } });
     }
   });
 
@@ -1163,8 +1174,8 @@ async function initConfig(out, runDoctor) {
     fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
     console.log(`\nWrote config: ${file}`);
     console.log(`配置已写入：${file}`);
-    console.log(`Set key: export ${apiKeyEnv}="..."`);
-    console.log(`设置 Key：export ${apiKeyEnv}="..."`);
+    console.log(`Set environment variable before starting: ${apiKeyEnv}`);
+    console.log(`启动前设置环境变量：${apiKeyEnv}`);
     if (runDoctor !== false) await doctor(loadConfig(file));
   } finally {
     prompt.close();
@@ -1277,6 +1288,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error.stack || String(error));
+  console.error(safeErrorMessage(error));
   process.exitCode = 1;
 });

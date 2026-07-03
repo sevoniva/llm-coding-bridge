@@ -36,6 +36,15 @@ async function requestText(url, body, headers = {}) {
   return text;
 }
 
+async function requestRaw(url, body, headers = {}) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test", ...headers },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, text: await response.text() };
+}
+
 function runCli(cli, args, options = {}) {
   const child = spawn(process.execPath, [cli, ...args], {
     env: { ...process.env, ...(options.env || {}) },
@@ -69,6 +78,11 @@ async function main() {
       upstreamRequests += 1;
       const payload = JSON.parse(raw);
       const prompt = payload.messages[payload.messages.length - 1].content;
+      if (prompt.includes("upstream fail")) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "authorization=secret-token" }));
+        return;
+      }
       const tool = (payload.tools || []).map((item) => item.function).find((item) => item?.name === "bridge_probe" || item?.name === "bridge_freeform" || item?.name === "tool_search");
       if (tool) {
         const args = tool.name === "tool_search" ? { query: "Gmail search emails" } : { input: "OK" };
@@ -145,6 +159,15 @@ async function main() {
     stream: false,
   });
   assert.equal(chat.choices[0].message.content, "echo:hello");
+
+  const upstreamError = await requestRaw(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
+    model: "client-model",
+    messages: [{ role: "user", content: "upstream fail" }],
+    stream: false,
+  });
+  assert.equal(upstreamError.status, 401);
+  assert.match(upstreamError.text, /Upstream HTTP 401/);
+  assert.doesNotMatch(upstreamError.text, /secret-token/);
 
   const stream = await requestText(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
     model: "client-model",
