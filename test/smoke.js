@@ -447,6 +447,26 @@ async function main() {
   authBridge.kill("SIGTERM");
   await new Promise((resolve) => authBridge.on("close", resolve));
 
+  // doctor 能带上 localToken 鉴权
+  const docAuthConfigPath = path.join(tmp, "docauth.config.json");
+  const docAuthBridgePort = upstreamPort + 7;
+  fs.writeFileSync(docAuthConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: docAuthBridgePort, localToken: "secret-token-xyz" },
+    upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
+  }, null, 2));
+  const docAuthBridge = spawn(process.execPath, [cli, "serve", "--config", docAuthConfigPath], {
+    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try { const h = await fetch(`http://127.0.0.1:${docAuthBridgePort}/health`); if (h.status === 200) break; } catch {}
+    await wait(100);
+  }
+  const docAuthStatus = await runCli(cli, ["status", "--config", docAuthConfigPath]);
+  assert.equal(docAuthStatus.code, 0, docAuthStatus.stderr || docAuthStatus.stdout);
+  assert.match(docAuthStatus.stdout, /health/);
+  docAuthBridge.kill("SIGTERM");
+  await new Promise((resolve) => docAuthBridge.on("close", resolve));
+
   // 多上游 model 路由
   const upstream2 = http.createServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/v1/chat/completions") { res.writeHead(404).end(); return; }
