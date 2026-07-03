@@ -19,7 +19,7 @@ npm install -g @sevoniva/llm-coding-bridge
 For a local tarball:
 
 ```bash
-npm install -g ./sevoniva-llm-coding-bridge-0.1.0.tgz
+npm install -g ./sevoniva-llm-coding-bridge-*.tgz
 ```
 
 Confirm the command is available:
@@ -179,6 +179,18 @@ Expected result:
 {"ok":true}
 ```
 
+Local service check without an upstream model call:
+
+```bash
+llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
+```
+
+Full endpoint check:
+
+```bash
+llm-coding-bridge doctor --deep --config ~/.llm-coding-bridge/config.json
+```
+
 ## 5. Configure Codex
 
 Print the template:
@@ -194,6 +206,7 @@ model = "model-name"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+# `llm-coding-bridge codex-profile` generates model_catalog_json automatically.
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -214,6 +227,7 @@ model = "model-name"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+model_catalog_json = "/absolute/path/to/codex-model-catalog.json"
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -226,14 +240,13 @@ stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
 
-Create the profile from the template:
+Generate the profile from the bridge config:
 
 ```bash
-mkdir -p ~/.codex
-llm-coding-bridge template codex > ~/.codex/bridge.config.toml
+llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
 ```
 
-Edit `~/.codex/bridge.config.toml` and set `model = "model-name"` to your upstream model ID.
+The command writes `~/.codex/bridge.config.toml` and a local Codex model catalog. Use `--force` to overwrite generated files.
 
 Run Codex CLI with the profile:
 
@@ -285,6 +298,7 @@ model = "model-name"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+# For Desktop, set model_catalog_json to the generated catalog path if Codex reports custom model metadata warnings.
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -336,6 +350,12 @@ Install launchd service:
 llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
 ```
 
+Restart it after package or config changes:
+
+```bash
+llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
+```
+
 Remove it:
 
 ```bash
@@ -347,6 +367,12 @@ Logs:
 ```text
 ~/.llm-coding-bridge/logs/out.log
 ~/.llm-coding-bridge/logs/err.log
+```
+
+Print recent logs:
+
+```bash
+llm-coding-bridge logs --lines 80
 ```
 
 Use `apiKeyCommand` for autostart. Environment variables from an interactive shell are not guaranteed to be available to launchd services.
@@ -372,7 +398,9 @@ Then run:
 
 ```bash
 llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
-llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
+llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 ```
 
 ## 9. Troubleshooting
@@ -463,7 +491,7 @@ npm install -g @sevoniva/llm-coding-bridge
 本地 tarball 安装：
 
 ```bash
-npm install -g ./sevoniva-llm-coding-bridge-0.1.0.tgz
+npm install -g ./sevoniva-llm-coding-bridge-*.tgz
 ```
 
 确认命令可用：
@@ -621,6 +649,18 @@ curl http://127.0.0.1:18080/health
 {"ok":true}
 ```
 
+不调用上游模型的本地服务检测：
+
+```bash
+llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
+```
+
+完整端点检测：
+
+```bash
+llm-coding-bridge doctor --deep --config ~/.llm-coding-bridge/config.json
+```
+
 ## 5. 配置 Codex
 
 输出模板：
@@ -636,6 +676,7 @@ model = "model-name"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+# `llm-coding-bridge codex-profile` 会自动生成 model_catalog_json。
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -656,6 +697,7 @@ model = "model-name"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+model_catalog_json = "/absolute/path/to/codex-model-catalog.json"
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -668,14 +710,13 @@ stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
 
-从模板创建 profile：
+从 bridge 配置生成 profile：
 
 ```bash
-mkdir -p ~/.codex
-llm-coding-bridge template codex > ~/.codex/bridge.config.toml
+llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
 ```
 
-编辑 `~/.codex/bridge.config.toml`，把 `model = "model-name"` 改成上游模型 ID。
+命令会写入 `~/.codex/bridge.config.toml` 和本地 Codex model catalog。已有生成文件时使用 `--force` 覆盖。
 
 使用 profile 启动：
 
@@ -727,6 +768,7 @@ model = "model-name"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+# 如果 Codex Desktop 提示自定义模型元数据缺失，把 model_catalog_json 设置为生成的 catalog 路径。
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -778,6 +820,12 @@ export ANTHROPIC_API_KEY="local"
 llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
 ```
 
+配置或包升级后重启服务：
+
+```bash
+llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
+```
+
 卸载：
 
 ```bash
@@ -789,6 +837,12 @@ llm-coding-bridge uninstall-service
 ```text
 ~/.llm-coding-bridge/logs/out.log
 ~/.llm-coding-bridge/logs/err.log
+```
+
+查看最近日志：
+
+```bash
+llm-coding-bridge logs --lines 80
 ```
 
 开机自启建议使用 `apiKeyCommand`，不要依赖交互式终端的环境变量。
@@ -810,7 +864,9 @@ Claude 环境变量或配置
 
 ```bash
 llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
-llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
+llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 ```
 
 ## 9. 常见问题

@@ -96,6 +96,12 @@ Then point clients at:
 http://127.0.0.1:18080/v1
 ```
 
+For a local service check that does not call the upstream model:
+
+```bash
+llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
+```
+
 ## Codex
 
 Print the Codex template:
@@ -111,6 +117,7 @@ model = "your-model"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+# `llm-coding-bridge codex-profile` generates model_catalog_json automatically.
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
@@ -125,14 +132,14 @@ stream_idle_timeout_ms = 600000
 
 Use this as a separate Codex profile if you do not want to change your default Codex Desktop setup.
 
-For Codex CLI, save the template as a profile:
+For Codex CLI, generate a separate profile:
 
 ```bash
-mkdir -p ~/.codex
-llm-coding-bridge template codex > ~/.codex/bridge.config.toml
-# Edit ~/.codex/bridge.config.toml and set model = "your-model"
+llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
 codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
+
+Use `--force` to overwrite an existing generated profile.
 
 The check should show:
 
@@ -190,6 +197,12 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
 ```
 
+Restart it after package or config changes:
+
+```bash
+llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
+```
+
 Remove it:
 
 ```bash
@@ -200,6 +213,12 @@ Logs are written to:
 
 ```text
 ~/.llm-coding-bridge/logs/
+```
+
+Print recent logs:
+
+```bash
+llm-coding-bridge logs --lines 80
 ```
 
 ## 中文说明
@@ -232,6 +251,7 @@ llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```bash
 export LLM_API_KEY="..."
 llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
 ```
 
 启动服务：
@@ -249,11 +269,11 @@ http://127.0.0.1:18080/v1
 Codex CLI 建议用独立 profile，避免影响默认配置：
 
 ```bash
-mkdir -p ~/.codex
-llm-coding-bridge template codex > ~/.codex/bridge.config.toml
-# 编辑 ~/.codex/bridge.config.toml，把 model 改成你的上游模型
+llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
 codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
+
+已有生成文件时使用 `--force` 覆盖。
 
 输出中应看到：
 
@@ -268,6 +288,12 @@ Codex Desktop 使用前要保证 bridge 在后台运行。macOS 可安装 launch
 ```bash
 llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
 curl http://127.0.0.1:18080/health
+```
+
+配置或包升级后重启服务：
+
+```bash
+llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
 ```
 
 然后备份 `~/.codex/config.toml`，把同一段 provider 配置和顶部的 `model` / `model_provider` 写入 `~/.codex/config.toml`，修改后重启桌面端。
@@ -296,6 +322,12 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
 长期使用建议安装 macOS 自启动，并用 Keychain 命令读取 API Key，避免依赖终端环境变量。
+
+查看最近日志：
+
+```bash
+llm-coding-bridge logs --lines 80
+```
 
 ## Security
 

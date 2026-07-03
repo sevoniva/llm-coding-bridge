@@ -13,13 +13,17 @@ const DEFAULT_CONFIG = "llm-coding-bridge.config.json";
 
 function parseArgs(argv) {
   const command = argv[0] && !argv[0].startsWith("-") ? argv.shift() : "help";
-  const args = { command, config: DEFAULT_CONFIG, out: DEFAULT_CONFIG, name: "llm-coding-bridge" };
+  const args = { command, config: DEFAULT_CONFIG, out: DEFAULT_CONFIG, name: "llm-coding-bridge", home: os.homedir(), lines: 80 };
   if (command === "template" && argv[0] && !argv[0].startsWith("-")) args.template = argv.shift();
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--config" || arg === "-c") args.config = argv[++i];
     else if (arg === "--out" || arg === "-o") args.out = argv[++i];
     else if (arg === "--name") args.name = argv[++i];
+    else if (arg === "--home") args.home = argv[++i];
+    else if (arg === "--lines") args.lines = Number(argv[++i]);
+    else if (arg === "--force") args.force = true;
+    else if (arg === "--deep") args.deep = true;
     else if (arg === "--no-doctor") args.doctor = false;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -32,10 +36,15 @@ function usage() {
   llm-coding-bridge init --out llm-coding-bridge.config.json
   llm-coding-bridge serve --config llm-coding-bridge.config.json
   llm-coding-bridge doctor --config llm-coding-bridge.config.json
+  llm-coding-bridge doctor --deep --config llm-coding-bridge.config.json
+  llm-coding-bridge status --config llm-coding-bridge.config.json
+  llm-coding-bridge codex-profile --config llm-coding-bridge.config.json --name bridge
   llm-coding-bridge template codex
   llm-coding-bridge template codex-desktop
   llm-coding-bridge template claude
+  llm-coding-bridge logs --lines 80
   llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+  llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
   llm-coding-bridge uninstall-service`;
 }
 
@@ -75,6 +84,28 @@ function getApiKey(upstream) {
 
 function upstreamUrl(upstream) {
   return `${upstream.baseUrl.replace(/\/$/, "")}/chat/completions`;
+}
+
+function localUrl(config, pathname = "") {
+  return `http://${config.server.host}:${config.server.port}${pathname}`;
+}
+
+async function fetchLocalJson(config, method, pathname, body = null) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(localUrl(config, pathname), {
+      method,
+      headers: { "Content-Type": "application/json", Authorization: "Bearer local", "x-api-key": "local" },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
+    return text ? JSON.parse(text) : {};
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function readJson(req) {
@@ -793,7 +824,7 @@ function startServer(config) {
   return server;
 }
 
-async function doctor(config) {
+async function doctor(config, deep = false) {
   const chat = await fetchUpstreamJson(config, {
     model: config.upstream.model,
     messages: [
@@ -807,6 +838,131 @@ async function doctor(config) {
   const response = chatToResponse(config, chat);
   if (response.output_text !== "OK") throw new Error("Responses conversion failed.");
   console.log(`[OK] ${config.upstream.name || "upstream"} -> ${config.upstream.model}`);
+  if (deep) await deepDoctor(config);
+}
+
+async function deepDoctor(config) {
+  const health = await fetchLocalJson(config, "GET", "/health");
+  if (health.ok !== true) throw new Error("Local health check failed.");
+  const models = await fetchLocalJson(config, "GET", "/v1/models");
+  if (!models.data?.[0]?.id || !models.models?.[0]?.slug || !models.models?.[0]?.model_messages) {
+    throw new Error("Local models response is not compatible with Codex.");
+  }
+  const responses = await fetchLocalJson(config, "POST", "/v1/responses", {
+    model: config.upstream.model,
+    input: "Reply with exactly: OK",
+    stream: false,
+  });
+  if ((responses.output_text || "").trim() !== "OK") throw new Error("Local responses endpoint failed.");
+  const messages = await fetchLocalJson(config, "POST", "/v1/messages", {
+    model: config.upstream.model,
+    max_tokens: 32,
+    messages: [{ role: "user", content: "Reply with exactly: OK" }],
+    stream: false,
+  });
+  if ((messages.content?.[0]?.text || "").trim() !== "OK") throw new Error("Local messages endpoint failed.");
+  console.log("[OK] health");
+  console.log("[OK] models");
+  console.log("[OK] responses endpoint");
+  console.log("[OK] messages endpoint");
+}
+
+function packageVersion() {
+  return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version;
+}
+
+function serviceLabel() {
+  return "com.sevoniva.llm-coding-bridge";
+}
+
+function printCheck(ok, label, detail = "") {
+  console.log(`[${ok ? "OK" : "FAIL"}] ${label}${detail ? ` ${detail}` : ""}`);
+  return ok;
+}
+
+async function status(config) {
+  let ok = true;
+  printCheck(true, "package", `@sevoniva/llm-coding-bridge ${packageVersion()}`);
+  printCheck(true, "config", config.path);
+  try {
+    const health = await fetchLocalJson(config, "GET", "/health");
+    ok = printCheck(health.ok === true, "health", localUrl(config, "/health")) && ok;
+  } catch (error) {
+    ok = printCheck(false, "health", error.message) && ok;
+  }
+  try {
+    const models = await fetchLocalJson(config, "GET", "/v1/models");
+    const model = models.data?.[0]?.id;
+    const catalog = models.models?.[0];
+    ok = printCheck(Boolean(model && catalog?.slug && catalog?.model_messages), "models", model || "missing") && ok;
+  } catch (error) {
+    ok = printCheck(false, "models", error.message) && ok;
+  }
+  if (process.platform === "darwin") {
+    const result = spawnSync("launchctl", ["print", `gui/${process.getuid()}/${serviceLabel()}`], { encoding: "utf8" });
+    console.log(`[${result.status === 0 ? "OK" : "WARN"}] launchd ${serviceLabel()}`);
+  }
+  console.log(`logs ${path.join(os.homedir(), ".llm-coding-bridge", "logs")}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function tomlString(value) {
+  return JSON.stringify(String(value));
+}
+
+function writeChecked(file, text, force) {
+  if (!force && fs.existsSync(file)) throw new Error(`${file} already exists. Re-run with --force to overwrite.`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+}
+
+function createCodexProfile(config, name, home, force) {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error("Profile name may only contain letters, numbers, dots, dashes, and underscores.");
+  const root = path.resolve(home);
+  const profilePath = path.join(root, ".codex", `${name}.config.toml`);
+  const catalogPath = path.join(root, ".llm-coding-bridge", "codex-model-catalog.json");
+  if (!force) {
+    for (const file of [profilePath, catalogPath]) {
+      if (fs.existsSync(file)) throw new Error(`${file} already exists. Re-run with --force to overwrite.`);
+    }
+  }
+  const baseUrl = `${localUrl(config, "/v1")}`;
+  const profile = `model = ${tomlString(config.upstream.model)}
+model_provider = "llm-coding-bridge"
+model_reasoning_effort = "none"
+disable_response_storage = true
+model_catalog_json = ${tomlString(catalogPath)}
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = ${tomlString(baseUrl)}
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+`;
+  writeChecked(catalogPath, `${JSON.stringify({ models: [codexCatalogModel(config)] }, null, 2)}\n`, force);
+  writeChecked(profilePath, profile, force);
+  console.log(`[OK] wrote ${profilePath}`);
+  console.log(`[OK] wrote ${catalogPath}`);
+  console.log(`Use: codex --profile ${name}`);
+}
+
+function printLogs(home, lines) {
+  const count = Number.isFinite(lines) && lines > 0 ? Math.floor(lines) : 80;
+  const dir = path.join(path.resolve(home), ".llm-coding-bridge", "logs");
+  for (const name of ["out.log", "err.log"]) {
+    const file = path.join(dir, name);
+    console.log(`==> ${file} <==`);
+    if (!fs.existsSync(file)) {
+      console.log("(missing)");
+      continue;
+    }
+    const text = fs.readFileSync(file, "utf8").trimEnd().split(/\r?\n/).slice(-count).join("\n");
+    if (text) console.log(text);
+  }
 }
 
 function valueOrDefault(value, fallback) {
@@ -885,7 +1041,18 @@ function plistPath() {
   return path.join(os.homedir(), "Library", "LaunchAgents", "com.sevoniva.llm-coding-bridge.plist");
 }
 
-function installService(configPath) {
+function plistEscape(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function servicePath() {
+  return [...new Set([path.dirname(process.execPath), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])].join(":");
+}
+
+function installService(configPath, verb = "installed") {
   if (process.platform !== "darwin") throw new Error("install-service currently supports macOS launchd only.");
   const config = path.resolve(configPath);
   const logDir = path.join(os.homedir(), ".llm-coding-bridge", "logs");
@@ -893,14 +1060,17 @@ function installService(configPath) {
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.sevoniva.llm-coding-bridge</string>
+  <key>Label</key><string>${serviceLabel()}</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>${plistEscape(servicePath())}</string>
+  </dict>
   <key>ProgramArguments</key><array>
-    <string>${process.execPath}</string><string>${__filename}</string><string>serve</string><string>--config</string><string>${config}</string>
+    <string>/usr/bin/env</string><string>node</string><string>${plistEscape(__filename)}</string><string>serve</string><string>--config</string><string>${plistEscape(config)}</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>${path.join(logDir, "out.log")}</string>
-  <key>StandardErrorPath</key><string>${path.join(logDir, "err.log")}</string>
+  <key>StandardOutPath</key><string>${plistEscape(path.join(logDir, "out.log"))}</string>
+  <key>StandardErrorPath</key><string>${plistEscape(path.join(logDir, "err.log"))}</string>
 </dict></plist>
 `;
   fs.mkdirSync(path.dirname(plistPath()), { recursive: true });
@@ -909,7 +1079,11 @@ function installService(configPath) {
   spawnSync("launchctl", ["bootout", domain, plistPath()], { stdio: "ignore" });
   const result = spawnSync("launchctl", ["bootstrap", domain, plistPath()], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr.trim() || "launchctl bootstrap failed");
-  console.log(`[OK] installed ${plistPath()}`);
+  console.log(`[OK] ${verb} ${plistPath()}`);
+}
+
+function restartService(configPath) {
+  installService(configPath, "restarted");
 }
 
 function uninstallService() {
@@ -928,9 +1102,13 @@ async function main() {
   }
   if (args.command === "template") return printTemplate(args.template || "codex");
   if (args.command === "init") return initConfig(args.out, args.doctor);
-  if (args.command === "doctor") return doctor(loadConfig(args.config));
+  if (args.command === "doctor") return doctor(loadConfig(args.config), args.deep);
+  if (args.command === "status") return status(loadConfig(args.config));
+  if (args.command === "codex-profile") return createCodexProfile(loadConfig(args.config), args.name, args.home, args.force);
+  if (args.command === "logs") return printLogs(args.home, args.lines);
   if (args.command === "serve") return startServer(loadConfig(args.config));
   if (args.command === "install-service") return installService(args.config);
+  if (args.command === "restart-service") return restartService(args.config);
   if (args.command === "uninstall-service") return uninstallService();
   throw new Error(`Unknown command: ${args.command}`);
 }

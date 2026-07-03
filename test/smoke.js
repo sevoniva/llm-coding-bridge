@@ -36,6 +36,18 @@ async function requestText(url, body, headers = {}) {
   return text;
 }
 
+function runCli(cli, args, options = {}) {
+  const child = spawn(process.execPath, [cli, ...args], {
+    env: { ...process.env, ...(options.env || {}) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  return new Promise((resolve) => child.on("close", (code) => resolve({ code, stdout, stderr })));
+}
+
 function sse(res, body) {
   res.write(`data: ${JSON.stringify(body)}\n\n`);
 }
@@ -135,6 +147,12 @@ async function main() {
   assert.equal(modelsBody.data[0].id, "fake-model");
   assert.equal(modelsBody.models[0].slug, "fake-model");
   assert.equal(modelsBody.models[0].context_window, 128000);
+  assert.ok(modelsBody.models[0].model_messages);
+
+  const status = await runCli(cli, ["status", "--config", configPath]);
+  assert.equal(status.code, 0, status.stderr || status.stdout);
+  assert.match(status.stdout, /health/);
+  assert.match(status.stdout, /models/);
 
   const claude = await requestJson(`http://127.0.0.1:${bridgePort}/v1/messages`, {
     model: "client-model",
@@ -164,6 +182,35 @@ async function main() {
   const doctorCode = await new Promise((resolve) => doctor.on("close", resolve));
   assert.equal(doctorCode, 0, doctorErr || doctorOut);
   assert.match(doctorOut, /OK/);
+
+  const deepDoctor = await runCli(cli, ["doctor", "--deep", "--config", configPath], { env: { FAKE_API_KEY: "upstream-key" } });
+  assert.equal(deepDoctor.code, 0, deepDoctor.stderr || deepDoctor.stdout);
+  assert.match(deepDoctor.stdout, /responses/);
+  assert.match(deepDoctor.stdout, /messages/);
+
+  const profileHome = path.join(tmp, "profile-home");
+  const profile = await runCli(cli, ["codex-profile", "--config", configPath, "--name", "bridge", "--home", profileHome]);
+  assert.equal(profile.code, 0, profile.stderr || profile.stdout);
+  const profilePath = path.join(profileHome, ".codex", "bridge.config.toml");
+  const catalogPath = path.join(profileHome, ".llm-coding-bridge", "codex-model-catalog.json");
+  assert.match(fs.readFileSync(profilePath, "utf8"), /model = "fake-model"/);
+  assert.match(fs.readFileSync(profilePath, "utf8"), /model_catalog_json = /);
+  assert.equal(JSON.parse(fs.readFileSync(catalogPath, "utf8")).models[0].slug, "fake-model");
+
+  const repeatProfile = await runCli(cli, ["codex-profile", "--config", configPath, "--name", "bridge", "--home", profileHome]);
+  assert.notEqual(repeatProfile.code, 0);
+  const forceProfile = await runCli(cli, ["codex-profile", "--config", configPath, "--name", "bridge", "--home", profileHome, "--force"]);
+  assert.equal(forceProfile.code, 0, forceProfile.stderr || forceProfile.stdout);
+
+  const logHome = path.join(tmp, "log-home");
+  const logDir = path.join(logHome, ".llm-coding-bridge", "logs");
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(path.join(logDir, "out.log"), "old out\nnew out\n");
+  fs.writeFileSync(path.join(logDir, "err.log"), "old err\nnew err\n");
+  const logs = await runCli(cli, ["logs", "--home", logHome, "--lines", "1"]);
+  assert.equal(logs.code, 0, logs.stderr || logs.stdout);
+  assert.match(logs.stdout, /new out/);
+  assert.match(logs.stdout, /new err/);
 
   const initPath = path.join(tmp, "init.json");
   const init = spawn(process.execPath, [cli, "init", "--out", initPath, "--no-doctor"], { stdio: ["pipe", "pipe", "pipe"] });

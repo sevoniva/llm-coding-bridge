@@ -4,6 +4,7 @@ model = "your-model"
 model_provider = "llm-coding-bridge"
 model_reasoning_effort = "none"
 disable_response_storage = true
+# If Codex reports unknown custom model metadata, set model_catalog_json to the generated catalog path.
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
