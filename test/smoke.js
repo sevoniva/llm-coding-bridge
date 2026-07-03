@@ -57,6 +57,38 @@ function runCli(cli, args, options = {}) {
   return new Promise((resolve) => child.on("close", (code) => resolve({ code, stdout, stderr })));
 }
 
+// Spawn a bridge on a random port (port:0) and resolve once it's listening.
+// Avoids fixed-port collisions that made the suite flaky across runs.
+function spawnBridge(cli, configPath, env = {}) {
+  const child = spawn(process.execPath, [cli, "serve", "--config", configPath], {
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return new Promise((resolve, reject) => {
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      const m = stderr.match(/listening on http:\/\/[\d.]+:(\d+)\/v1/);
+      if (m) resolve({ child, port: Number(m[1]) });
+    });
+    child.on("close", () => reject(new Error(`bridge exited before listening: ${stderr}`)));
+    setTimeout(() => reject(new Error("bridge listen timeout")), 10000);
+  });
+}
+
+// Reserve a free port by binding to :0 then closing, so it can be written into
+// a config file for commands (status/doctor) that read the port from config.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = http.createServer();
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+    probe.on("error", reject);
+  });
+}
+
 function sse(res, body) {
   res.write(`data: ${JSON.stringify(body)}\n\n`);
 }
@@ -130,7 +162,7 @@ async function main() {
 
   const upstreamPort = upstream.address().port;
   const configPath = path.join(tmp, "bridge.config.json");
-  const bridgePort = upstreamPort + 1;
+  const bridgePort = await freePort();
   fs.writeFileSync(configPath, JSON.stringify({
     server: { host: "127.0.0.1", port: bridgePort },
     upstream: {
@@ -142,23 +174,8 @@ async function main() {
   }, null, 2));
 
   const cli = path.join(__dirname, "..", "bin", "llm-coding-bridge.js");
-  const bridge = spawn(process.execPath, [cli, "serve", "--config", configPath], {
-    env: { ...process.env, FAKE_API_KEY: "upstream-key" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const { child: bridge } = await spawnBridge(cli, configPath, { FAKE_API_KEY: "upstream-key" });
   bridgeProcess = bridge;
-  let bridgeOut = "";
-  let bridgeErr = "";
-  bridge.stdout.on("data", (chunk) => { bridgeOut += chunk; });
-  bridge.stderr.on("data", (chunk) => { bridgeErr += chunk; });
-
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      const health = await fetch(`http://127.0.0.1:${bridgePort}/health`);
-      if (health.status === 200) break;
-    } catch {}
-    await wait(100);
-  }
 
   const chat = await requestJson(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
     model: "client-model",
@@ -376,9 +393,8 @@ async function main() {
   fs.writeFileSync(cmdScript, `#!/bin/sh\necho x >> "${counterFile}"\necho "cmd-key"\n`);
   fs.chmodSync(cmdScript, 0o755);
   const cmdConfigPath = path.join(cmdTmp, "bridge.config.json");
-  const cmdBridgePort = upstreamPort + 2;
   fs.writeFileSync(cmdConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: cmdBridgePort },
+    server: { host: "127.0.0.1", port: 0 },
     upstream: {
       name: "fake-upstream",
       baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
@@ -386,16 +402,7 @@ async function main() {
       apiKeyCommand: { command: cmdScript, args: [] },
     },
   }, null, 2));
-  const cmdBridge = spawn(process.execPath, [cli, "serve", "--config", cmdConfigPath], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      const h = await fetch(`http://127.0.0.1:${cmdBridgePort}/health`);
-      if (h.status === 200) break;
-    } catch {}
-    await wait(100);
-  }
+  const { child: cmdBridge, port: cmdBridgePort } = await spawnBridge(cli, cmdConfigPath);
   for (let i = 0; i < 3; i += 1) {
     await requestJson(`http://127.0.0.1:${cmdBridgePort}/v1/chat/completions`, {
       model: "fake-model",
@@ -414,9 +421,8 @@ async function main() {
   fs.writeFileSync(nocacheScript, `#!/bin/sh\necho x >> "${nocacheCounter}"\necho "cmd-key"\n`);
   fs.chmodSync(nocacheScript, 0o755);
   const nocacheConfigPath = path.join(cmdTmp, "nocache.config.json");
-  const nocacheBridgePort = upstreamPort + 8;
   fs.writeFileSync(nocacheConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: nocacheBridgePort },
+    server: { host: "127.0.0.1", port: 0 },
     upstream: {
       name: "fake-upstream",
       baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
@@ -425,13 +431,7 @@ async function main() {
       apiKeyCacheTtlMs: 0,
     },
   }, null, 2));
-  const nocacheBridge = spawn(process.execPath, [cli, "serve", "--config", nocacheConfigPath], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try { const h = await fetch(`http://127.0.0.1:${nocacheBridgePort}/health`); if (h.status === 200) break; } catch {}
-    await wait(100);
-  }
+  const { child: nocacheBridge, port: nocacheBridgePort } = await spawnBridge(cli, nocacheConfigPath);
   for (let i = 0; i < 3; i += 1) {
     await requestJson(`http://127.0.0.1:${nocacheBridgePort}/v1/chat/completions`, {
       model: "fake-model", messages: [{ role: "user", content: "hello" }], stream: false,
@@ -462,18 +462,11 @@ async function main() {
   rotateUpstream.unref();
   const rotatePort = rotateUpstream.address().port;
   const rotateConfigPath = path.join(rotateTmp, "rotate.config.json");
-  const rotateBridgePort = upstreamPort + 9;
   fs.writeFileSync(rotateConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: rotateBridgePort },
+    server: { host: "127.0.0.1", port: 0 },
     upstream: { name: "u", baseUrl: `http://127.0.0.1:${rotatePort}/v1`, model: "m", apiKeyCommand: { command: rotateScript, args: [] } },
   }, null, 2));
-  const rotateBridge = spawn(process.execPath, [cli, "serve", "--config", rotateConfigPath], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try { const h = await fetch(`http://127.0.0.1:${rotateBridgePort}/health`); if (h.status === 200) break; } catch {}
-    await wait(100);
-  }
+  const { child: rotateBridge, port: rotateBridgePort } = await spawnBridge(cli, rotateConfigPath);
   const rotateFirst = await requestRaw(`http://127.0.0.1:${rotateBridgePort}/v1/chat/completions`, {
     model: "m", messages: [{ role: "user", content: "hello" }], stream: false,
   });
@@ -488,22 +481,11 @@ async function main() {
 
   // 可选本地 token 鉴权
   const authConfigPath = path.join(tmp, "auth.config.json");
-  const authBridgePort = upstreamPort + 3;
   fs.writeFileSync(authConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: authBridgePort, localToken: "secret-token-xyz" },
+    server: { host: "127.0.0.1", port: 0, localToken: "secret-token-xyz" },
     upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
   }, null, 2));
-  const authBridge = spawn(process.execPath, [cli, "serve", "--config", authConfigPath], {
-    env: { ...process.env, FAKE_API_KEY: "upstream-key" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      const h = await fetch(`http://127.0.0.1:${authBridgePort}/health`);
-      if (h.status === 200) break;
-    } catch {}
-    await wait(100);
-  }
+  const { child: authBridge, port: authBridgePort } = await spawnBridge(cli, authConfigPath, { FAKE_API_KEY: "upstream-key" });
   const healthNoAuth = await fetch(`http://127.0.0.1:${authBridgePort}/health`);
   assert.equal(healthNoAuth.status, 200);
   const noToken = await requestRaw(`http://127.0.0.1:${authBridgePort}/v1/chat/completions`, {
@@ -527,18 +509,13 @@ async function main() {
 
   // doctor 能带上 localToken 鉴权
   const docAuthConfigPath = path.join(tmp, "docauth.config.json");
-  const docAuthBridgePort = upstreamPort + 7;
+  const docAuthBridgePort = await freePort();
   fs.writeFileSync(docAuthConfigPath, JSON.stringify({
     server: { host: "127.0.0.1", port: docAuthBridgePort, localToken: "secret-token-xyz" },
     upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
   }, null, 2));
-  const docAuthBridge = spawn(process.execPath, [cli, "serve", "--config", docAuthConfigPath], {
-    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try { const h = await fetch(`http://127.0.0.1:${docAuthBridgePort}/health`); if (h.status === 200) break; } catch {}
-    await wait(100);
-  }
+  const { child: docAuthBridge } = await spawnBridge(cli, docAuthConfigPath, { FAKE_API_KEY: "upstream-key" });
+  void docAuthBridgePort;
   const docAuthStatus = await runCli(cli, ["status", "--config", docAuthConfigPath]);
   assert.equal(docAuthStatus.code, 0, docAuthStatus.stderr || docAuthStatus.stdout);
   assert.match(docAuthStatus.stdout, /health/);
@@ -558,21 +535,14 @@ async function main() {
   upstream2.unref();
   const upstream2Port = upstream2.address().port;
   const multiConfigPath = path.join(tmp, "multi.config.json");
-  const multiBridgePort = upstreamPort + 4;
   fs.writeFileSync(multiConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: multiBridgePort },
+    server: { host: "127.0.0.1", port: 0 },
     upstreams: [
       { name: "u1", model: "model-a", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKeyEnv: "FAKE_API_KEY" },
       { name: "u2", model: "model-b", baseUrl: `http://127.0.0.1:${upstream2Port}/v1`, apiKeyEnv: "FAKE_API_KEY" },
     ],
   }, null, 2));
-  const multiBridge = spawn(process.execPath, [cli, "serve", "--config", multiConfigPath], {
-    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try { const h = await fetch(`http://127.0.0.1:${multiBridgePort}/health`); if (h.status === 200) break; } catch {}
-    await wait(100);
-  }
+  const { child: multiBridge, port: multiBridgePort } = await spawnBridge(cli, multiConfigPath, { FAKE_API_KEY: "upstream-key" });
   const routeA = await requestJson(`http://127.0.0.1:${multiBridgePort}/v1/chat/completions`, {
     model: "model-a", messages: [{ role: "user", content: "hello" }], stream: false,
   });
@@ -595,18 +565,11 @@ async function main() {
 
   // 优雅退出：SIGTERM 终止进行中流式响应
   const graceConfigPath = path.join(tmp, "grace.config.json");
-  const graceBridgePort = upstreamPort + 5;
   fs.writeFileSync(graceConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: graceBridgePort },
+    server: { host: "127.0.0.1", port: 0 },
     upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
   }, null, 2));
-  const graceBridge = spawn(process.execPath, [cli, "serve", "--config", graceConfigPath], {
-    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try { const h = await fetch(`http://127.0.0.1:${graceBridgePort}/health`); if (h.status === 200) break; } catch {}
-    await wait(100);
-  }
+  const { child: graceBridge, port: graceBridgePort } = await spawnBridge(cli, graceConfigPath, { FAKE_API_KEY: "upstream-key" });
   const graceStreamRes = await fetch(`http://127.0.0.1:${graceBridgePort}/v1/responses`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
@@ -628,18 +591,11 @@ async function main() {
 
   // 优雅退出：Anthropic 流不被注入 [DONE]（[DONE] 是 OpenAI 约定，会破坏 Anthropic 客户端）
   const grace2ConfigPath = path.join(tmp, "grace2.config.json");
-  const grace2BridgePort = upstreamPort + 6;
   fs.writeFileSync(grace2ConfigPath, JSON.stringify({
-    server: { host: "127.0.0.1", port: grace2BridgePort },
+    server: { host: "127.0.0.1", port: 0 },
     upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
   }, null, 2));
-  const grace2Bridge = spawn(process.execPath, [cli, "serve", "--config", grace2ConfigPath], {
-    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try { const h = await fetch(`http://127.0.0.1:${grace2BridgePort}/health`); if (h.status === 200) break; } catch {}
-    await wait(100);
-  }
+  const { child: grace2Bridge, port: grace2BridgePort } = await spawnBridge(cli, grace2ConfigPath, { FAKE_API_KEY: "upstream-key" });
   const grace2Res = await fetch(`http://127.0.0.1:${grace2BridgePort}/v1/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer test", "anthropic-version": "2023-06-01" },
