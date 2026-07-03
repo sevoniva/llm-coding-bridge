@@ -126,15 +126,6 @@ function debug(message) {
   if (process.env.LLM_CODING_BRIDGE_DEBUG) console.error(`[debug] ${message}`);
 }
 
-function safeErrorMessage(error) {
-  const message = error?.message || String(error || "Error");
-  return String(message)
-    .replace(/Bearer\s+[^\s"']+/gi, "Bearer [redacted]")
-    .replace(/\bsk-[A-Za-z0-9]{8,}\b/g, "[redacted]")
-    .replace(/\b(api[_-]?key|authorization|x-api-key)(["'\s:=]+)([^"',\s}]+)/gi, "$1$2[redacted]")
-    .slice(0, 300);
-}
-
 function writeSse(res, event, body) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(body)}\n\n`);
@@ -946,8 +937,8 @@ function startServer(config) {
         return;
       }
       sendJson(res, 404, { error: { message: `Not found: ${req.method} ${req.url}`, type: "not_found" } });
-    } catch (error) {
-      sendJson(res, 500, { error: { message: safeErrorMessage(error), type: "bridge_error" } });
+    } catch {
+      sendJson(res, 500, { error: { message: "Bridge request failed.", type: "bridge_error" } });
     }
   });
 
@@ -1174,8 +1165,8 @@ async function initConfig(out, runDoctor) {
     fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
     console.log(`\nWrote config: ${file}`);
     console.log(`配置已写入：${file}`);
-    console.log(`Set environment variable before starting: ${apiKeyEnv}`);
-    console.log(`启动前设置环境变量：${apiKeyEnv}`);
+    console.log("Set the configured environment variable before starting.");
+    console.log("启动前设置配置中的环境变量。");
     if (runDoctor !== false) await doctor(loadConfig(file));
   } finally {
     prompt.close();
@@ -1287,7 +1278,7 @@ async function main() {
   throw new Error(`Unknown command: ${args.command}`);
 }
 
-main().catch((error) => {
-  console.error(safeErrorMessage(error));
+main().catch(() => {
+  console.error("Command failed.");
   process.exitCode = 1;
 });
