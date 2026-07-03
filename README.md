@@ -84,7 +84,7 @@ Route requests to different providers by the `model` field the client sends. Use
 }
 ```
 
-A request with `model: "gpt-4o"` routes to OpenAI; `model: "other-model"` routes to Other. Unknown models fall back to the first upstream. `/v1/models` lists all configured models.
+A request with `model: "gpt-4o"` routes to OpenAI; `model: "other-model"` routes to Other. With multiple upstreams configured, a model that matches none of them returns `404 model_not_found` rather than silently routing to the wrong provider. With a single `upstream`, the client's model field is rewritten to the configured one (backward compatible). `/v1/models` lists all configured models.
 
 ## Local auth
 
@@ -100,7 +100,7 @@ Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-s
 
 ## API key caching
 
-`apiKeyCommand` results are cached in-process for 10 minutes by default to avoid spawning a command on every request. Override with `upstream.apiKeyCacheTtlMs`. Each upstream in a multi-upstream config has an independent cache.
+`apiKeyCommand` results are cached in-process for 10 minutes by default to avoid spawning a command on every request. Override with `upstream.apiKeyCacheTtlMs`; set it to `0` to disable caching and resolve the key on every request. Each upstream in a multi-upstream config has an independent cache. If the upstream returns `401`, the cached key is dropped immediately so the next request re-resolves — this lets a rotated key recover without restarting the bridge.
 
 For background services, prefer a command-backed key so launchd does not depend on shell environment variables:
 
@@ -159,7 +159,7 @@ name = "LLM Coding Bridge"
 base_url = "http://127.0.0.1:18080/v1"
 wire_api = "responses"
 requires_openai_auth = true
-experimental_bearer_token = "local"
+experimental_bearer_token = "local"  # replace with server.localToken if configured
 request_max_retries = 1
 stream_max_retries = 1
 stream_idle_timeout_ms = 600000
@@ -365,9 +365,11 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 llm-coding-bridge logs --lines 80
 ```
 
-多上游路由：用 `upstreams` 数组替代 `upstream`，按客户端请求的 `model` 字段路由到不同上游。详见上方 "Multiple upstreams"。
+多上游路由：用 `upstreams` 数组替代 `upstream`，按客户端请求的 `model` 字段路由到不同上游。多上游时未知 model 返回 404，不静默回退；单上游时客户端 model 字段被改写为配置值（向后兼容）。详见上方 "Multiple upstreams"。
 
 本地鉴权：配置 `server.localToken` 后，请求须带 `Authorization: Bearer <token>` 或 `x-api-key: <token>`，绑非 loopback 时强烈建议启用。
+
+API Key 缓存：`apiKeyCommand` 结果默认缓存 10 分钟，用 `upstream.apiKeyCacheTtlMs` 覆盖，设 `0` 禁用。上游返回 401 时缓存立即失效，下次请求重新解析，轮换的 key 无需重启即可恢复。
 
 ## Security
 
