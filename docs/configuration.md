@@ -51,6 +51,7 @@ Upstream model / 上游模型名称: model-name
 API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
+Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
 
 Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
@@ -70,6 +71,7 @@ Prompt reference:
 | `API key environment variable` | Environment variable used to read the upstream API key. | `LLM_API_KEY` |
 | `API key command` | Optional command that prints the upstream API key. Recommended for background services. | Keychain or secret-manager command |
 | `Temperature` | Sampling temperature sent to the upstream provider. | `0` for coding workflows |
+| `Local auth token` | Optional bearer/x-api-key token clients must present. Leave blank to disable. Strongly recommended when binding to a non-loopback address. | Random secret, or blank |
 
 Generated config:
 
@@ -157,6 +159,46 @@ security add-generic-password \
   -s llm-coding-bridge \
   -w "YOUR_API_KEY" \
   -U
+```
+
+The `apiKeyCommand` accepts either an object (`{ "command", "args" }`, run directly without a shell) or a string (run through `/bin/sh -lc`). Prefer the object form — it avoids shell interpretation and is the form `init` writes when given a keychain command. Results are cached in-process for 10 minutes by default; override with `upstream.apiKeyCacheTtlMs`, or set it to `0` to resolve the key on every request. If the upstream returns `401`, the cached key is dropped immediately so the next request re-resolves — a rotated key recovers without restarting the bridge.
+
+## 3a. Local Auth
+
+By default the bridge listens on `127.0.0.1` and does not require auth. To require a token, set `server.localToken`:
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080, "localToken": "your-secret" }
+}
+```
+
+Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time. When `localToken` is set, update the Codex profile's `experimental_bearer_token` and Claude's `ANTHROPIC_API_KEY` to the same value. Strongly recommended when binding to a non-loopback address.
+
+## 3b. Multiple Upstreams
+
+Route requests to different providers by the `model` field the client sends. Use `upstreams` instead of `upstream`:
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080 },
+  "upstreams": [
+    { "name": "OpenAI", "model": "gpt-4o", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" },
+    { "name": "Other", "model": "other-model", "baseUrl": "https://api.other.com/v1", "apiKeyEnv": "OTHER_API_KEY" }
+  ]
+}
+```
+
+A request with `model: "gpt-4o"` routes to OpenAI; `model: "other-model"` routes to Other. With multiple upstreams, a model matching none of them returns `404 model_not_found` rather than silently routing to the wrong provider. With a single `upstream`, the client's model field is rewritten to the configured one (backward compatible). `/v1/models` lists all configured models. Each upstream has an independent API-key cache.
+
+## 3c. Request Limits
+
+Request bodies are capped at 10 MB by default. Override with `server.maxBodyBytes` (bytes). Oversized requests receive `413 payload_too_large` and the connection is closed.
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080, "maxBodyBytes": 20971520 }
+}
 ```
 
 ## 4. Validate
@@ -543,6 +585,7 @@ Upstream model / 上游模型名称: model-name
 API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
+Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
 
 Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
@@ -562,6 +605,7 @@ Set key: export LLM_API_KEY="..."
 | `API key environment variable` | 读取上游 API Key 的环境变量名。 | `LLM_API_KEY` |
 | `API key command` | 可选。输出上游 API Key 的命令，适合后台服务和开机自启。 | Keychain 或密钥管理命令 |
 | `Temperature` | 发送给上游服务的采样温度。 | 编码场景建议 `0` |
+| `Local auth token` | 可选。客户端必须携带的 bearer/x-api-key token，留空则不启用。绑非 loopback 时强烈建议配置。 | 随机密钥，或留空 |
 
 生成配置示例：
 
@@ -647,6 +691,46 @@ security add-generic-password \
   -s llm-coding-bridge \
   -w "YOUR_API_KEY" \
   -U
+```
+
+`apiKeyCommand` 接受对象（`{ "command", "args" }`，直接执行不走 shell）或字符串（走 `/bin/sh -lc`）两种形式。推荐对象形式——避免 shell 解释，`init` 写入 keychain 命令时也用这种。结果默认缓存 10 分钟，用 `upstream.apiKeyCacheTtlMs` 覆盖，设 `0` 每次请求重新解析。上游返回 401 时缓存立即失效，下次请求重新解析，轮换的 key 无需重启即可恢复。
+
+## 3a. 本地鉴权
+
+默认监听 `127.0.0.1` 且不要求鉴权。需要 token 时配置 `server.localToken`：
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080, "localToken": "your-secret" }
+}
+```
+
+客户端须带 `Authorization: Bearer your-secret` 或 `x-api-key: your-secret`。`/health` 不鉴权。比较为常量时间。配置 localToken 后，Codex profile 的 `experimental_bearer_token` 和 Claude 的 `ANTHROPIC_API_KEY` 要改成同一个值。绑非 loopback 时强烈建议启用。
+
+## 3b. 多上游
+
+按客户端请求的 `model` 字段路由到不同上游。用 `upstreams` 替代 `upstream`：
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080 },
+  "upstreams": [
+    { "name": "OpenAI", "model": "gpt-4o", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" },
+    { "name": "Other", "model": "other-model", "baseUrl": "https://api.other.com/v1", "apiKeyEnv": "OTHER_API_KEY" }
+  ]
+}
+```
+
+`model: "gpt-4o"` 路由到 OpenAI，`model: "other-model"` 路由到 Other。多上游时未知 model 返回 `404 model_not_found`，不静默回退；单 `upstream` 时客户端 model 字段被改写为配置值（向后兼容）。`/v1/models` 列出全部已配置模型。每个上游有独立的 API Key 缓存。
+
+## 3c. 请求体限制
+
+请求体默认上限 10 MB，用 `server.maxBodyBytes`（字节）覆盖。超限返回 `413 payload_too_large` 并关闭连接。
+
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 18080, "maxBodyBytes": 20971520 }
+}
 ```
 
 ## 4. 检测和启动
