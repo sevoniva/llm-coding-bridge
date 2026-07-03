@@ -506,6 +506,11 @@ async function main() {
   const multiModels = await fetch(`http://127.0.0.1:${multiBridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
   const multiModelsBody = await multiModels.json();
   assert.equal(multiModelsBody.data.length, 2);
+  // 多上游时未知 model 报 404，不静默回退
+  const unknownModel = await requestRaw(`http://127.0.0.1:${multiBridgePort}/v1/chat/completions`, {
+    model: "nonexistent-model", messages: [{ role: "user", content: "hello" }], stream: false,
+  });
+  assert.equal(unknownModel.status, 404);
   multiBridge.kill("SIGTERM");
   await new Promise((resolve) => multiBridge.on("close", resolve));
   await new Promise((resolve) => upstream2.close(resolve));
