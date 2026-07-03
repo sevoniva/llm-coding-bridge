@@ -1,6 +1,6 @@
 {
   "name": "@sevoniva/llm-coding-bridge",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Local bridge for using OpenAI-compatible chat completion providers with coding clients.",
   "license": "MIT",
   "type": "commonjs",
@@ -10,11 +10,15 @@
   "files": [
     "bin",
     "docs",
+    "scripts",
     "templates",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
+    "lint": "node --check bin/llm-coding-bridge.js && node --check test/smoke.js && node --check scripts/security-scan.js",
+    "security:scan": "node scripts/security-scan.js",
+    "sca": "npm audit --audit-level=high",
     "test": "node test/smoke.js",
     "pack:check": "npm pack --dry-run"
   },
