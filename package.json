@@ -9,6 +9,7 @@
   },
   "files": [
     "bin",
+    "docs",
     "templates",
     "README.md",
     "LICENSE"

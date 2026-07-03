@@ -1,0 +1,709 @@
+# Configuration Guide
+
+This guide explains how to configure `@sevoniva/llm-coding-bridge` for a dedicated OpenAI-compatible upstream provider.
+
+The bridge exposes local endpoints for coding clients:
+
+- Codex CLI / Codex Desktop: `http://127.0.0.1:18080/v1/responses`
+- Claude Code: `http://127.0.0.1:18080/v1/messages`
+- OpenAI-compatible clients: `http://127.0.0.1:18080/v1/chat/completions`
+
+The upstream provider must support OpenAI-compatible `/v1/chat/completions`.
+
+## 1. Install
+
+```bash
+npm install -g @sevoniva/llm-coding-bridge
+```
+
+For a local tarball:
+
+```bash
+npm install -g ./sevoniva-llm-coding-bridge-0.1.0.tgz
+```
+
+Confirm the command is available:
+
+```bash
+llm-coding-bridge --help
+```
+
+## 2. Create Configuration
+
+Run the setup guide:
+
+```bash
+llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
+```
+
+Prompts:
+
+```text
+Listen host / 本地监听地址 [127.0.0.1]:
+Listen port / 本地监听端口 [18080]:
+Provider name / 上游服务名称 [Custom Provider]:
+Upstream base URL / 上游 Base URL:
+Upstream model / 上游模型名称:
+API key environment variable / API Key 环境变量 [LLM_API_KEY]:
+API key command (optional) / API Key 读取命令（可选）:
+Temperature / 采样温度 [0]:
+```
+
+Example output:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18080
+  },
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeyEnv": "LLM_API_KEY",
+    "temperature": 0,
+    "reasoningEffort": "none"
+  }
+}
+```
+
+Do not store API keys in this file.
+
+## 3. API Key Options
+
+### Environment Variable
+
+Use this for terminal sessions:
+
+```bash
+export LLM_API_KEY="..."
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+```
+
+Config:
+
+```json
+{
+  "upstream": {
+    "apiKeyEnv": "LLM_API_KEY"
+  }
+}
+```
+
+### Command-Backed Key
+
+Use this for background services. It avoids relying on shell startup files.
+
+macOS Keychain example:
+
+```json
+{
+  "upstream": {
+    "apiKeyCommand": {
+      "command": "/usr/bin/security",
+      "args": [
+        "find-generic-password",
+        "-a",
+        "LLM_API_KEY",
+        "-s",
+        "llm-coding-bridge",
+        "-w"
+      ]
+    }
+  }
+}
+```
+
+Store the key:
+
+```bash
+security add-generic-password \
+  -a LLM_API_KEY \
+  -s llm-coding-bridge \
+  -w "YOUR_API_KEY" \
+  -U
+```
+
+## 4. Validate
+
+Check the upstream and conversion path:
+
+```bash
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+```
+
+Expected result:
+
+```text
+[OK] Custom Provider -> model-name
+```
+
+Start the bridge:
+
+```bash
+llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:18080/health
+```
+
+Expected result:
+
+```json
+{"ok":true}
+```
+
+## 5. Configure Codex
+
+Print the template:
+
+```bash
+llm-coding-bridge template codex
+```
+
+User-level Codex config example:
+
+```toml
+model = "model-name"
+model_provider = "llm-coding-bridge"
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+```
+
+Use a separate Codex profile if you do not want to change the default provider:
+
+```toml
+# ~/.codex/bridge.config.toml
+model = "model-name"
+model_provider = "llm-coding-bridge"
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+```
+
+Run Codex CLI with the profile:
+
+```bash
+codex --profile bridge
+```
+
+Non-interactive check:
+
+```bash
+codex exec --skip-git-repo-check "Reply exactly: OK"
+```
+
+Codex Desktop uses the same user-level provider configuration. Restart the desktop app after changing `~/.codex/config.toml` or a profile file.
+
+## 6. Configure Claude Code
+
+Print the template:
+
+```bash
+llm-coding-bridge template claude
+```
+
+Temporary session:
+
+```bash
+ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
+ANTHROPIC_API_KEY="local" \
+claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
+```
+
+Notes:
+
+- `ANTHROPIC_BASE_URL` should not include `/v1`.
+- `--setting-sources local` prevents existing user settings from overriding the test.
+- `ANTHROPIC_API_KEY` is only used by the local bridge for client compatibility; upstream authentication is configured in `~/.llm-coding-bridge/config.json`.
+
+For persistent Claude Code use, add these environment variables to your shell profile or Claude settings:
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
+export ANTHROPIC_API_KEY="local"
+```
+
+## 7. macOS Autostart
+
+Install launchd service:
+
+```bash
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+```
+
+Remove it:
+
+```bash
+llm-coding-bridge uninstall-service
+```
+
+Logs:
+
+```text
+~/.llm-coding-bridge/logs/out.log
+~/.llm-coding-bridge/logs/err.log
+```
+
+Use `apiKeyCommand` for autostart. Environment variables from an interactive shell are not guaranteed to be available to launchd services.
+
+## 8. Move to Another Computer
+
+Install the package:
+
+```bash
+npm install -g @sevoniva/llm-coding-bridge
+```
+
+Copy or recreate:
+
+```text
+~/.llm-coding-bridge/config.json
+Codex profile or provider config
+Claude environment variables or settings
+API key in the target machine's secure store
+```
+
+Then run:
+
+```bash
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+```
+
+## 9. Troubleshooting
+
+### `Missing API key env`
+
+The configured environment variable is not set.
+
+Fix:
+
+```bash
+export LLM_API_KEY="..."
+```
+
+For services, use `apiKeyCommand`.
+
+### `Upstream HTTP 401`
+
+The upstream rejected the key.
+
+Check:
+
+- the API key value
+- the key source command
+- whether the upstream expects a Bearer token
+
+### Codex Returns No Text
+
+Check that Codex uses Responses API:
+
+```toml
+wire_api = "responses"
+```
+
+Then run:
+
+```bash
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+```
+
+### Claude Does Not Hit the Bridge
+
+Use an isolated check:
+
+```bash
+ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
+ANTHROPIC_API_KEY="local" \
+claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
+```
+
+If this works, an existing Claude settings file is overriding the environment.
+
+### Port Is Already in Use
+
+Change the local port:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18081
+  }
+}
+```
+
+Update Codex and Claude client configuration to use the same port.
+
+---
+
+# 配置指南
+
+本文说明如何把一个 OpenAI-compatible `/v1/chat/completions` 上游服务接入 Codex 和 Claude 类客户端。
+
+本地 bridge 暴露以下接口：
+
+- Codex CLI / Codex Desktop：`http://127.0.0.1:18080/v1/responses`
+- Claude Code：`http://127.0.0.1:18080/v1/messages`
+- OpenAI-compatible 客户端：`http://127.0.0.1:18080/v1/chat/completions`
+
+它面向专用上游连接：用一个本地端点同时服务 Codex、Claude Code 和 OpenAI-compatible 客户端。
+
+## 1. 安装
+
+```bash
+npm install -g @sevoniva/llm-coding-bridge
+```
+
+本地 tarball 安装：
+
+```bash
+npm install -g ./sevoniva-llm-coding-bridge-0.1.0.tgz
+```
+
+确认命令可用：
+
+```bash
+llm-coding-bridge --help
+```
+
+## 2. 生成配置
+
+运行配置向导：
+
+```bash
+llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
+```
+
+向导会依次询问：
+
+```text
+Listen host / 本地监听地址 [127.0.0.1]:
+Listen port / 本地监听端口 [18080]:
+Provider name / 上游服务名称 [Custom Provider]:
+Upstream base URL / 上游 Base URL:
+Upstream model / 上游模型名称:
+API key environment variable / API Key 环境变量 [LLM_API_KEY]:
+API key command (optional) / API Key 读取命令（可选）:
+Temperature / 采样温度 [0]:
+```
+
+生成配置示例：
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18080
+  },
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeyEnv": "LLM_API_KEY",
+    "temperature": 0,
+    "reasoningEffort": "none"
+  }
+}
+```
+
+配置文件不保存 API Key。
+
+## 3. API Key 配置
+
+### 环境变量
+
+适合手动启动服务：
+
+```bash
+export LLM_API_KEY="..."
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+```
+
+配置字段：
+
+```json
+{
+  "upstream": {
+    "apiKeyEnv": "LLM_API_KEY"
+  }
+}
+```
+
+### 命令读取
+
+适合后台服务和开机自启：
+
+```json
+{
+  "upstream": {
+    "apiKeyCommand": {
+      "command": "/usr/bin/security",
+      "args": [
+        "find-generic-password",
+        "-a",
+        "LLM_API_KEY",
+        "-s",
+        "llm-coding-bridge",
+        "-w"
+      ]
+    }
+  }
+}
+```
+
+写入 macOS Keychain：
+
+```bash
+security add-generic-password \
+  -a LLM_API_KEY \
+  -s llm-coding-bridge \
+  -w "YOUR_API_KEY" \
+  -U
+```
+
+## 4. 检测和启动
+
+检测上游和协议转换：
+
+```bash
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+```
+
+期望输出：
+
+```text
+[OK] Custom Provider -> model-name
+```
+
+启动服务：
+
+```bash
+llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:18080/health
+```
+
+期望输出：
+
+```json
+{"ok":true}
+```
+
+## 5. 配置 Codex
+
+输出模板：
+
+```bash
+llm-coding-bridge template codex
+```
+
+Codex 用户级配置示例：
+
+```toml
+model = "model-name"
+model_provider = "llm-coding-bridge"
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+```
+
+如果不想影响默认 Codex 配置，建议使用独立 profile：
+
+```toml
+# ~/.codex/bridge.config.toml
+model = "model-name"
+model_provider = "llm-coding-bridge"
+
+[model_providers.llm-coding-bridge]
+name = "LLM Coding Bridge"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "local"
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 600000
+```
+
+使用 profile 启动：
+
+```bash
+codex --profile bridge
+```
+
+非交互检测：
+
+```bash
+codex exec --skip-git-repo-check "Reply exactly: OK"
+```
+
+Codex Desktop 使用同一套用户级 provider 配置。修改 `~/.codex/config.toml` 或 profile 文件后，需要重启桌面端。
+
+## 6. 配置 Claude Code
+
+输出模板：
+
+```bash
+llm-coding-bridge template claude
+```
+
+临时验证：
+
+```bash
+ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
+ANTHROPIC_API_KEY="local" \
+claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
+```
+
+注意：
+
+- `ANTHROPIC_BASE_URL` 不带 `/v1`。
+- `--setting-sources local` 用于避免现有用户配置覆盖本次验证。
+- `ANTHROPIC_API_KEY` 只是本地客户端兼容值；真实上游认证在 bridge 配置中完成。
+
+长期使用可把环境变量写入 shell profile 或 Claude 配置：
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
+export ANTHROPIC_API_KEY="local"
+```
+
+## 7. macOS 开机自启
+
+安装 launchd 服务：
+
+```bash
+llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+```
+
+卸载：
+
+```bash
+llm-coding-bridge uninstall-service
+```
+
+日志位置：
+
+```text
+~/.llm-coding-bridge/logs/out.log
+~/.llm-coding-bridge/logs/err.log
+```
+
+开机自启建议使用 `apiKeyCommand`，不要依赖交互式终端的环境变量。
+
+## 8. 换电脑
+
+新机器需要准备：
+
+```text
+Node.js
+@sevoniva/llm-coding-bridge
+~/.llm-coding-bridge/config.json
+Codex provider/profile 配置
+Claude 环境变量或配置
+目标机器安全存储中的 API Key
+```
+
+验证：
+
+```bash
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+```
+
+## 9. 常见问题
+
+### `Missing API key env`
+
+配置的环境变量不存在。
+
+修复：
+
+```bash
+export LLM_API_KEY="..."
+```
+
+后台服务建议改用 `apiKeyCommand`。
+
+### `Upstream HTTP 401`
+
+上游拒绝认证。
+
+检查：
+
+- API Key 是否正确
+- `apiKeyCommand` 是否能返回 key
+- 上游是否使用 Bearer Token
+
+### Codex 没有输出
+
+确认 Codex 使用 Responses API：
+
+```toml
+wire_api = "responses"
+```
+
+再运行：
+
+```bash
+llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
+```
+
+### Claude 没有请求本地服务
+
+先用隔离命令验证：
+
+```bash
+ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
+ANTHROPIC_API_KEY="local" \
+claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
+```
+
+如果隔离命令可用，通常是已有 Claude 用户配置覆盖了环境变量。
+
+### 端口被占用
+
+修改本地端口：
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18081
+  }
+}
+```
+
+同时更新 Codex 和 Claude 客户端配置。

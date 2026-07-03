@@ -9,7 +9,7 @@ It exposes:
 - `/v1/chat/completions` for OpenAI-compatible clients
 - `/v1/models` and `/health` for client checks
 
-The bridge is intentionally single-provider. It is for stable local use, not routing, fallback, pricing, or benchmarking.
+The bridge is designed for a dedicated upstream connection: one local endpoint for Codex, Claude Code, and OpenAI-compatible clients.
 
 ## Install
 
@@ -30,6 +30,8 @@ Run the bilingual setup guide:
 ```bash
 llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```
+
+For complete setup instructions, see [Configuration Guide](docs/configuration.md).
 
 The generated file looks like this:
 
@@ -162,7 +164,7 @@ Logs are written to:
 - `/v1/chat/completions`：给 OpenAI-compatible 客户端使用
 - `/v1/models` 和 `/health`：用于客户端检测
 
-第一版只支持单个上游。它的目标是稳定接入本地或私有模型，不做多模型路由、fallback、计费或性能评测。
+它面向专用上游连接：用一个本地端点同时服务 Codex、Claude Code 和 OpenAI-compatible 客户端。
 
 安装：
 

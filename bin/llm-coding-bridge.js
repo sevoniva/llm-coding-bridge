@@ -766,17 +766,17 @@ function valueOrDefault(value, fallback) {
 async function initConfig(out, runDoctor) {
   const prompt = createPrompt();
   try {
-    console.log("Create bridge configuration / 创建中转配置");
-    console.log("API keys are read from environment variables or commands. They are not written to config files.");
-    console.log("API Key 通过环境变量或命令读取，不会写入配置文件。\n");
-    const host = valueOrDefault(await prompt.ask("Listen host / 监听地址 [127.0.0.1]: "), "127.0.0.1");
-    const port = Number(valueOrDefault(await prompt.ask("Listen port / 监听端口 [18080]: "), "18080"));
-    const name = valueOrDefault(await prompt.ask("Provider name / 服务名称 [Custom Provider]: "), "Custom Provider");
-    const baseUrl = valueOrDefault(await prompt.ask("Upstream base URL / 上游 API 地址: "), "");
-    const model = valueOrDefault(await prompt.ask("Upstream model / 上游模型: "), "");
-    const apiKeyEnv = valueOrDefault(await prompt.ask("API key env / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY");
-    const apiKeyCommand = valueOrDefault(await prompt.ask("API key command / API Key 命令 [optional]: "), "");
-    const temperature = Number(valueOrDefault(await prompt.ask("Temperature / 温度 [0]: "), "0"));
+    console.log("LLM Coding Bridge setup / LLM Coding Bridge 配置向导");
+    console.log("API keys are read from environment variables or commands and are not written to config files.");
+    console.log("API Key 通过环境变量或命令读取，不写入配置文件。\n");
+    const host = valueOrDefault(await prompt.ask("Listen host / 本地监听地址 [127.0.0.1]: "), "127.0.0.1");
+    const port = Number(valueOrDefault(await prompt.ask("Listen port / 本地监听端口 [18080]: "), "18080"));
+    const name = valueOrDefault(await prompt.ask("Provider name / 上游服务名称 [Custom Provider]: "), "Custom Provider");
+    const baseUrl = valueOrDefault(await prompt.ask("Upstream base URL / 上游 Base URL: "), "");
+    const model = valueOrDefault(await prompt.ask("Upstream model / 上游模型名称: "), "");
+    const apiKeyEnv = valueOrDefault(await prompt.ask("API key environment variable / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY");
+    const apiKeyCommand = valueOrDefault(await prompt.ask("API key command (optional) / API Key 读取命令（可选）: "), "");
+    const temperature = Number(valueOrDefault(await prompt.ask("Temperature / 采样温度 [0]: "), "0"));
     if (!baseUrl) throw new Error("Upstream base URL is required.");
     if (!model) throw new Error("Upstream model is required.");
     if (!Number.isFinite(port)) throw new Error("Port must be a number.");
