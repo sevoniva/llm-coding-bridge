@@ -408,6 +408,40 @@ async function main() {
   cmdBridge.kill("SIGTERM");
   await new Promise((resolve) => cmdBridge.on("close", resolve));
 
+  // apiKeyCacheTtlMs:0 禁用缓存，每次请求都 spawn
+  const nocacheCounter = path.join(cmdTmp, "count0");
+  const nocacheScript = path.join(cmdTmp, "key0.sh");
+  fs.writeFileSync(nocacheScript, `#!/bin/sh\necho x >> "${nocacheCounter}"\necho "cmd-key"\n`);
+  fs.chmodSync(nocacheScript, 0o755);
+  const nocacheConfigPath = path.join(cmdTmp, "nocache.config.json");
+  const nocacheBridgePort = upstreamPort + 8;
+  fs.writeFileSync(nocacheConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: nocacheBridgePort },
+    upstream: {
+      name: "fake-upstream",
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      model: "fake-model",
+      apiKeyCommand: { command: nocacheScript, args: [] },
+      apiKeyCacheTtlMs: 0,
+    },
+  }, null, 2));
+  const nocacheBridge = spawn(process.execPath, [cli, "serve", "--config", nocacheConfigPath], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try { const h = await fetch(`http://127.0.0.1:${nocacheBridgePort}/health`); if (h.status === 200) break; } catch {}
+    await wait(100);
+  }
+  for (let i = 0; i < 3; i += 1) {
+    await requestJson(`http://127.0.0.1:${nocacheBridgePort}/v1/chat/completions`, {
+      model: "fake-model", messages: [{ role: "user", content: "hello" }], stream: false,
+    });
+  }
+  const nocacheCount = fs.readFileSync(nocacheCounter, "utf8").trim().split("\n").length;
+  assert.equal(nocacheCount, 3, `apiKeyCacheTtlMs:0 should spawn per request, got ${nocacheCount}`);
+  nocacheBridge.kill("SIGTERM");
+  await new Promise((resolve) => nocacheBridge.on("close", resolve));
+
   // 可选本地 token 鉴权
   const authConfigPath = path.join(tmp, "auth.config.json");
   const authBridgePort = upstreamPort + 3;
