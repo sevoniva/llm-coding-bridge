@@ -693,6 +693,53 @@ function handleAnthropicTokenCount(payload, res) {
   sendJson(res, 200, { input_tokens: approxTokens(text) });
 }
 
+function codexCatalogModel(config) {
+  const contextWindow = Number(config.upstream.contextWindow || config.upstream.context_window || 128000);
+  const displayName = config.upstream.displayName || config.upstream.name || config.upstream.model;
+  return {
+    slug: config.upstream.model,
+    display_name: displayName,
+    description: `${displayName} through LLM Coding Bridge.`,
+    default_reasoning_level: "medium",
+    supported_reasoning_levels: [
+      { effort: "low", description: "Fast responses" },
+      { effort: "medium", description: "Balanced reasoning" },
+      { effort: "high", description: "Deeper reasoning" },
+    ],
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    priority: 1,
+    base_instructions: "You are Codex, a coding agent. Follow the user's instructions, use concise engineering prose, and avoid exposing secrets.",
+    model_messages: {
+      instructions_template:
+        "{{ personality }}\n\nYou are Codex, a coding agent. Follow the user's instructions, use concise engineering prose, and avoid exposing secrets.",
+      instructions_variables: {
+        personality_default: "",
+        personality_pragmatic: "Use direct, practical engineering prose. Keep updates concise and action-oriented.",
+      },
+    },
+    additional_speed_tiers: [],
+    service_tiers: [],
+    upgrade: null,
+    supports_reasoning_summaries: false,
+    default_reasoning_summary: "none",
+    support_verbosity: false,
+    default_verbosity: "low",
+    apply_patch_tool_type: "freeform",
+    truncation_policy: { mode: "tokens", limit: 10000 },
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: false,
+    context_window: contextWindow,
+    max_context_window: contextWindow,
+    effective_context_window_percent: 95,
+    experimental_supported_tools: [],
+    input_modalities: ["text"],
+    supports_search_tool: false,
+    use_responses_lite: false,
+  };
+}
+
 function startServer(config) {
   const server = http.createServer(async (req, res) => {
     try {
@@ -708,7 +755,7 @@ function startServer(config) {
         sendJson(res, 200, {
           object: "list",
           data: [model],
-          models: [model],
+          models: [codexCatalogModel(config)],
         });
         return;
       }

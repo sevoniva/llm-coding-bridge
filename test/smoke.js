@@ -133,7 +133,8 @@ async function main() {
   assert.equal(models.status, 200);
   const modelsBody = await models.json();
   assert.equal(modelsBody.data[0].id, "fake-model");
-  assert.equal(modelsBody.models[0].id, "fake-model");
+  assert.equal(modelsBody.models[0].slug, "fake-model");
+  assert.equal(modelsBody.models[0].context_window, 128000);
 
   const claude = await requestJson(`http://127.0.0.1:${bridgePort}/v1/messages`, {
     model: "client-model",
