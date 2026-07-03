@@ -523,6 +523,39 @@ async function main() {
   const graceFull = (graceFirst.value ? Buffer.from(graceFirst.value).toString("utf8") : "") + graceChunks.join("");
   assert.match(graceFull, /response\.failed|\[DONE\]/);
 
+  // 优雅退出：Anthropic 流不被注入 [DONE]（[DONE] 是 OpenAI 约定，会破坏 Anthropic 客户端）
+  const grace2ConfigPath = path.join(tmp, "grace2.config.json");
+  const grace2BridgePort = upstreamPort + 6;
+  fs.writeFileSync(grace2ConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: grace2BridgePort },
+    upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
+  }, null, 2));
+  const grace2Bridge = spawn(process.execPath, [cli, "serve", "--config", grace2ConfigPath], {
+    env: { ...process.env, FAKE_API_KEY: "upstream-key" }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try { const h = await fetch(`http://127.0.0.1:${grace2BridgePort}/health`); if (h.status === 200) break; } catch {}
+    await wait(100);
+  }
+  const grace2Res = await fetch(`http://127.0.0.1:${grace2BridgePort}/v1/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test", "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: "fake-model", max_tokens: 64, messages: [{ role: "user", content: "stream claude" }], stream: true }),
+  });
+  const grace2Reader = grace2Res.body.getReader();
+  const grace2First = await grace2Reader.read();
+  grace2Bridge.kill("SIGTERM");
+  const grace2Chunks = [];
+  try {
+    while (true) {
+      const { done, value } = await grace2Reader.read();
+      if (done) break;
+      grace2Chunks.push(Buffer.from(value).toString("utf8"));
+    }
+  } catch {}
+  const grace2Full = (grace2First.value ? Buffer.from(grace2First.value).toString("utf8") : "") + grace2Chunks.join("");
+  assert.doesNotMatch(grace2Full, /\[DONE\]/);
+
   // 请求体大小限制
   const bigBody = JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "x".repeat(11 * 1024 * 1024) }], stream: false });
   const bigRes = await fetch(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
