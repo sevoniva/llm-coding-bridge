@@ -615,6 +615,32 @@ async function main() {
   const grace2Full = (grace2First.value ? Buffer.from(grace2First.value).toString("utf8") : "") + grace2Chunks.join("");
   assert.doesNotMatch(grace2Full, /\[DONE\]/);
 
+  // 优雅退出：chat 流式收到 [DONE]（OpenAI 约定）
+  const grace3ConfigPath = path.join(tmp, "grace3.config.json");
+  fs.writeFileSync(grace3ConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: 0 },
+    upstream: { name: "fake-upstream", baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, model: "fake-model", apiKeyEnv: "FAKE_API_KEY" },
+  }, null, 2));
+  const { child: grace3Bridge, port: grace3BridgePort } = await spawnBridge(cli, grace3ConfigPath, { FAKE_API_KEY: "upstream-key" });
+  const grace3Res = await fetch(`http://127.0.0.1:${grace3BridgePort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+    body: JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "long stream" }], stream: true }),
+  });
+  const grace3Reader = grace3Res.body.getReader();
+  const grace3First = await grace3Reader.read();
+  grace3Bridge.kill("SIGTERM");
+  const grace3Chunks = [];
+  try {
+    while (true) {
+      const { done, value } = await grace3Reader.read();
+      if (done) break;
+      grace3Chunks.push(Buffer.from(value).toString("utf8"));
+    }
+  } catch {}
+  const grace3Full = (grace3First.value ? Buffer.from(grace3First.value).toString("utf8") : "") + grace3Chunks.join("");
+  assert.match(grace3Full, /\[DONE\]/);
+
   // 请求体大小限制
   const bigBody = JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "x".repeat(11 * 1024 * 1024) }], stream: false });
   const bigRes = await fetch(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
