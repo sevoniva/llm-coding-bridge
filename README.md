@@ -373,5 +373,12 @@ llm-coding-bridge logs --lines 80
 
 - Config files should not contain API keys.
 - Use `apiKeyEnv` for interactive sessions.
-- Use `apiKeyCommand` for background services.
+- Use `apiKeyCommand` for background services. Prefer the object form `{ "command": "/usr/bin/security", "args": [...] }` over the string form; the string form runs through `/bin/sh -lc` and is only for convenience.
+- API key command results are cached in-process (default 10 min, override with `apiKeyCacheTtlMs`; set `0` to disable). The cache is busted automatically on an upstream 401.
+- Set `server.localToken` to require a bearer/x-api-key on every request. Strongly recommended when binding to a non-loopback address.
+- Request bodies are capped at 10 MB by default (`server.maxBodyBytes`).
 - Do not commit private config files.
+
+### Why this package runs shell commands
+
+This is a local bridge: it reads API keys from the environment or an OS keychain (`apiKeyCommand`), installs a macOS launchd service (`launchctl`), and writes Codex/Claude profile files under your home directory. These require shell execution, environment-variable access, and filesystem writes — they are the package's purpose, not side effects. It has zero runtime dependencies and no install scripts.
