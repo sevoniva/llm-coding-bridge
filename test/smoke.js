@@ -48,6 +48,7 @@ async function requestRaw(url, body, headers = {}) {
 function runCli(cli, args, options = {}) {
   const child = spawn(process.execPath, [cli, ...args], {
     env: { ...process.env, ...(options.env || {}) },
+    cwd: options.cwd,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -640,6 +641,50 @@ async function main() {
   } catch {}
   const grace3Full = (grace3First.value ? Buffer.from(grace3First.value).toString("utf8") : "") + grace3Chunks.join("");
   assert.match(grace3Full, /\[DONE\]/);
+
+  // CLI 错误信息:缺配置文件时给出路径与 init 提示,而不是笼统失败
+  const missingConfig = await runCli(cli, ["doctor", "--home", path.join(tmp, "no-such-home")], { cwd: tmp });
+  assert.equal(missingConfig.code, 1);
+  assert.match(missingConfig.stderr, /Config file not found: .*config\.json/);
+  assert.match(missingConfig.stderr, /llm-coding-bridge init/);
+
+  // CLI 错误信息:未知参数报具体参数并打印用法
+  const badArg = await runCli(cli, ["doctor", "--bogus"]);
+  assert.equal(badArg.code, 1);
+  assert.match(badArg.stderr, /Unknown argument: --bogus/);
+  assert.match(badArg.stderr, /Usage:/);
+
+  // CLI 错误信息:配置文件不是合法 JSON
+  const badJsonPath = path.join(tmp, "bad.config.json");
+  fs.writeFileSync(badJsonPath, "{not json");
+  const badJson = await runCli(cli, ["status", "--config", badJsonPath]);
+  assert.equal(badJson.code, 1);
+  assert.match(badJson.stderr, /not valid JSON/);
+
+  // 默认配置路径:CWD 存在 llm-coding-bridge.config.json 时无 --config 也能工作
+  const cwdDir = path.join(tmp, "cwd-config");
+  fs.mkdirSync(cwdDir, { recursive: true });
+  fs.copyFileSync(configPath, path.join(cwdDir, "llm-coding-bridge.config.json"));
+  const cwdStatus = await runCli(cli, ["status"], { cwd: cwdDir });
+  assert.equal(cwdStatus.code, 0, cwdStatus.stderr || cwdStatus.stdout);
+  assert.match(cwdStatus.stdout, /health/);
+
+  // 默认配置路径:CWD 无配置时回退 ~/.llm-coding-bridge/config.json
+  const homeDir = path.join(tmp, "home-config");
+  fs.mkdirSync(path.join(homeDir, ".llm-coding-bridge"), { recursive: true });
+  fs.copyFileSync(configPath, path.join(homeDir, ".llm-coding-bridge", "config.json"));
+  const homeStatus = await runCli(cli, ["status", "--home", homeDir], { cwd: tmp });
+  assert.equal(homeStatus.code, 0, homeStatus.stderr || homeStatus.stdout);
+  assert.match(homeStatus.stdout, /health/);
+
+  // init 非交互:必填项为空立刻报错,不再走到最后
+  const badInit = spawn(process.execPath, [cli, "init", "--out", path.join(tmp, "bad-init.json"), "--no-doctor"], { stdio: ["pipe", "pipe", "pipe"] });
+  badInit.stdin.end("\n\n\n\n");
+  let badInitErr = "";
+  badInit.stderr.on("data", (chunk) => { badInitErr += chunk; });
+  const badInitCode = await new Promise((resolve) => badInit.on("close", resolve));
+  assert.equal(badInitCode, 1);
+  assert.match(badInitErr, /Upstream base URL is required/);
 
   // 请求体大小限制
   const bigBody = JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "x".repeat(11 * 1024 * 1024) }], stream: false });

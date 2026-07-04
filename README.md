@@ -28,8 +28,10 @@ npx @sevoniva/llm-coding-bridge init
 Run the bilingual setup guide:
 
 ```bash
-llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
+llm-coding-bridge init
 ```
+
+The config is written to `~/.llm-coding-bridge/config.json` by default (override with `--out`). All commands read that file by default; a `llm-coding-bridge.config.json` in the current directory takes precedence, and `--config` overrides both.
 
 The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, temperature, and optional client setup:
 
@@ -122,9 +124,9 @@ For background services, prefer a command-backed key so launchd does not depend 
 ## Run
 
 ```bash
-llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
-llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
-llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge doctor
+llm-coding-bridge doctor --tools
+llm-coding-bridge serve
 ```
 
 Then point clients at:
@@ -136,7 +138,7 @@ http://127.0.0.1:18080/v1
 For a local service check that does not call the upstream model:
 
 ```bash
-llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge status
 ```
 
 `doctor --tools` verifies Codex-style function, freeform, and tool-search calls through the bridge.
@@ -174,7 +176,7 @@ Use this as a separate Codex profile if you do not want to change your default C
 For Codex CLI, generate a separate profile:
 
 ```bash
-llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
+llm-coding-bridge codex-profile --name bridge
 codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
@@ -191,7 +193,7 @@ If it shows `provider: openai`, Codex did not load the profile. Confirm the file
 For Codex Desktop, keep the bridge running in the background. On macOS, install the launchd service:
 
 ```bash
-llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge install-service
 curl http://127.0.0.1:18080/health
 ```
 
@@ -238,13 +240,13 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ## macOS autostart
 
 ```bash
-llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge install-service
 ```
 
 Restart it after package or config changes:
 
 ```bash
-llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge restart-service
 ```
 
 Remove it:
@@ -287,8 +289,10 @@ npm install -g @sevoniva/llm-coding-bridge
 生成配置：
 
 ```bash
-llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
+llm-coding-bridge init
 ```
+
+配置默认写入 `~/.llm-coding-bridge/config.json`（可用 `--out` 覆盖）。所有命令默认读取该文件；当前目录存在 `llm-coding-bridge.config.json` 时优先使用，`--config` 优先级最高。
 
 `init` 会在 bridge 配置和检测之后询问是否配置 Claude Code、Codex CLI profile 和 Codex Desktop。默认不写客户端配置；确认写入前会先备份已有文件，备份后缀为 `.bak-YYYYMMDD-HHMMSS`。Codex Desktop 会改变默认 provider，需要单独确认。
 
@@ -296,15 +300,15 @@ llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 
 ```bash
 export LLM_API_KEY="..."
-llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
-llm-coding-bridge doctor --tools --config ~/.llm-coding-bridge/config.json
-llm-coding-bridge status --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge doctor
+llm-coding-bridge doctor --tools
+llm-coding-bridge status
 ```
 
 启动服务：
 
 ```bash
-llm-coding-bridge serve --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge serve
 ```
 
 Codex 的 `base_url` 配为：
@@ -316,7 +320,7 @@ http://127.0.0.1:18080/v1
 Codex CLI 建议用独立 profile，避免影响默认配置：
 
 ```bash
-llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
+llm-coding-bridge codex-profile --name bridge
 codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
@@ -333,14 +337,14 @@ provider: llm-coding-bridge
 Codex Desktop 使用前要保证 bridge 在后台运行。macOS 可安装 launchd 服务：
 
 ```bash
-llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge install-service
 curl http://127.0.0.1:18080/health
 ```
 
 配置或包升级后重启服务：
 
 ```bash
-llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
+llm-coding-bridge restart-service
 ```
 
 然后备份 `~/.codex/config.toml`，把同一段 provider 配置和顶部的 `model` / `model_provider` 写入 `~/.codex/config.toml`，修改后重启桌面端。也可以在 `init` 中确认后自动写入。

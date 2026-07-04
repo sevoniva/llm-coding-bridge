@@ -13,11 +13,19 @@ const { createCodexProfile } = require("../lib/codex-profile");
 const { configureClaudeCode, configureCodexDesktop, manualClaude, manualCodexCli, manualCodexDesktop, manualSetup } = require("../lib/client-setup");
 const { installService, restartService, uninstallService } = require("../lib/service");
 
-const DEFAULT_CONFIG = "llm-coding-bridge.config.json";
+const CWD_CONFIG = "llm-coding-bridge.config.json";
+
+function homeConfigPath(home) {
+  return path.join(home, ".llm-coding-bridge", "config.json");
+}
+
+function defaultConfigPath(home) {
+  return fs.existsSync(CWD_CONFIG) ? path.resolve(CWD_CONFIG) : homeConfigPath(home);
+}
 
 function parseArgs(argv) {
   const command = argv[0] && !argv[0].startsWith("-") ? argv.shift() : "help";
-  const args = { command, config: DEFAULT_CONFIG, out: DEFAULT_CONFIG, name: "llm-coding-bridge", home: os.homedir(), lines: 80 };
+  const args = { command, config: "", out: "", name: "llm-coding-bridge", home: os.homedir(), lines: 80 };
   if (command === "template" && argv[0] && !argv[0].startsWith("-")) args.template = argv.shift();
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -33,30 +41,52 @@ function parseArgs(argv) {
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
+  if (!args.config) args.config = defaultConfigPath(args.home);
+  if (!args.out) args.out = homeConfigPath(args.home);
   return args;
 }
 
 function usage() {
   return `Usage:
-  llm-coding-bridge init --out llm-coding-bridge.config.json
-  llm-coding-bridge serve --config llm-coding-bridge.config.json
-  llm-coding-bridge doctor --config llm-coding-bridge.config.json
-  llm-coding-bridge doctor --deep --config llm-coding-bridge.config.json
-  llm-coding-bridge doctor --tools --config llm-coding-bridge.config.json
-  llm-coding-bridge status --config llm-coding-bridge.config.json
-  llm-coding-bridge codex-profile --config llm-coding-bridge.config.json --name bridge
+  llm-coding-bridge init [--out <file>]
+  llm-coding-bridge serve [--config <file>]
+  llm-coding-bridge doctor [--deep] [--tools] [--config <file>]
+  llm-coding-bridge status [--config <file>]
+  llm-coding-bridge codex-profile --name bridge [--force] [--config <file>]
   llm-coding-bridge template codex
   llm-coding-bridge template codex-desktop
   llm-coding-bridge template claude
   llm-coding-bridge logs --lines 80
-  llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
-  llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
-  llm-coding-bridge uninstall-service`;
+  llm-coding-bridge install-service [--config <file>]
+  llm-coding-bridge restart-service [--config <file>]
+  llm-coding-bridge uninstall-service
+
+Without --config, commands use ./${CWD_CONFIG} if present,
+otherwise ~/.llm-coding-bridge/config.json. init writes there by default.`;
 }
 
 function valueOrDefault(value, fallback) {
   const trimmed = String(value || "").trim();
   return trimmed || fallback;
+}
+
+async function askRequired(prompt, question, label) {
+  for (;;) {
+    const value = String(await prompt.ask(question)).trim();
+    if (value) return value;
+    if (!prompt.interactive) throw new Error(`${label} is required.`);
+    console.log(`${label} is required. / ${label} 不能为空。`);
+  }
+}
+
+async function askNumber(prompt, question, fallback, label) {
+  for (;;) {
+    const raw = valueOrDefault(await prompt.ask(question), fallback);
+    const value = Number(raw);
+    if (Number.isFinite(value)) return value;
+    if (!prompt.interactive) throw new Error(`${label} must be a number: ${raw}`);
+    console.log(`${label} must be a number. / ${label} 必须是数字。`);
+  }
 }
 
 function isYes(value) {
@@ -139,18 +169,14 @@ async function initConfig(out, runDoctor, home) {
     console.log("API keys are read from environment variables or commands and are not written to config files.");
     console.log("API Key 通过环境变量或命令读取，不写入配置文件。\n");
     const host = valueOrDefault(await prompt.ask("Listen host / 本地监听地址 [127.0.0.1]: "), "127.0.0.1");
-    const port = Number(valueOrDefault(await prompt.ask("Listen port / 本地监听端口 [18080]: "), "18080"));
+    const port = await askNumber(prompt, "Listen port / 本地监听端口 [18080]: ", "18080", "Listen port");
     const name = valueOrDefault(await prompt.ask("Provider name / 上游服务名称 [Custom Provider]: "), "Custom Provider");
-    const baseUrl = valueOrDefault(await prompt.ask("Upstream base URL / 上游 Base URL: "), "");
-    const model = valueOrDefault(await prompt.ask("Upstream model / 上游模型名称: "), "");
+    const baseUrl = await askRequired(prompt, "Upstream base URL / 上游 Base URL: ", "Upstream base URL");
+    const model = await askRequired(prompt, "Upstream model / 上游模型名称: ", "Upstream model");
     const apiKeyEnv = valueOrDefault(await prompt.ask("API key environment variable / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY");
     const apiKeyCommand = valueOrDefault(await prompt.ask("API key command (optional) / API Key 读取命令（可选）: "), "");
-    const temperature = Number(valueOrDefault(await prompt.ask("Temperature / 采样温度 [0]: "), "0"));
+    const temperature = await askNumber(prompt, "Temperature / 采样温度 [0]: ", "0", "Temperature");
     const localToken = valueOrDefault(await prompt.ask("Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）: "), "");
-    if (!baseUrl) throw new Error("Upstream base URL is required.");
-    if (!model) throw new Error("Upstream model is required.");
-    if (!Number.isFinite(port)) throw new Error("Port must be a number.");
-    if (!Number.isFinite(temperature)) throw new Error("Temperature must be a number.");
 
     const config = {
       server: { host, port, ...(localToken ? { localToken } : {}) },
@@ -177,6 +203,7 @@ function createPrompt() {
   if (!process.stdin.isTTY) {
     const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
     return {
+      interactive: false,
       ask(question) {
         process.stdout.write(question);
         return Promise.resolve(lines.shift() || "");
@@ -186,6 +213,7 @@ function createPrompt() {
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return {
+    interactive: true,
     ask(question) {
       return rl.question(question);
     },
@@ -230,13 +258,14 @@ async function main() {
   if (args.command === "codex-profile") return createCodexProfile(loadConfig(args.config), args.name, args.home, args.force);
   if (args.command === "logs") return printLogs(args.home, args.lines);
   if (args.command === "serve") return startServer(loadConfig(args.config));
-  if (args.command === "install-service") return installService(args.config);
-  if (args.command === "restart-service") return restartService(args.config);
+  if (args.command === "install-service") return installService(loadConfig(args.config).path);
+  if (args.command === "restart-service") return restartService(loadConfig(args.config).path);
   if (args.command === "uninstall-service") return uninstallService();
   throw new Error(`Unknown command: ${args.command}`);
 }
 
-main().catch(() => {
-  console.error("Command failed.");
+main().catch((error) => {
+  console.error(`Error: ${error.message}`);
+  if (/^Unknown (argument|command)/.test(error.message)) console.error(`\n${usage()}`);
   process.exitCode = 1;
 });
