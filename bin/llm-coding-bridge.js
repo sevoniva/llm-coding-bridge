@@ -10,6 +10,7 @@ const { loadConfig } = require("../lib/config");
 const { startServer } = require("../lib/server");
 const { doctor, status } = require("../lib/doctor");
 const { createCodexProfile } = require("../lib/codex-profile");
+const { configureClaudeCode, configureCodexDesktop, manualClaude, manualCodexCli, manualCodexDesktop, manualSetup } = require("../lib/client-setup");
 const { installService, restartService, uninstallService } = require("../lib/service");
 
 const DEFAULT_CONFIG = "llm-coding-bridge.config.json";
@@ -58,7 +59,80 @@ function valueOrDefault(value, fallback) {
   return trimmed || fallback;
 }
 
-async function initConfig(out, runDoctor) {
+function isYes(value) {
+  return /^(y|yes|是|好)$/i.test(String(value || "").trim());
+}
+
+async function confirm(prompt, question) {
+  return isYes(await prompt.ask(question));
+}
+
+function printWriteResult(label, result) {
+  console.log(`[OK] ${label}: ${result.file}`);
+  for (const backup of [result.backup, result.catalogBackup].filter(Boolean)) {
+    console.log(`[OK] backup ${backup}`);
+  }
+}
+
+async function configureClients(prompt, config, home) {
+  const wantsClients = await confirm(prompt, "\nConfigure local clients now? / 是否现在配置本地客户端？[y/N]: ");
+  if (!wantsClients) {
+    console.log(`\n${manualSetup(config)}`);
+    return;
+  }
+
+  if (await confirm(prompt, "Configure Claude Code settings? This affects Claude Code environment. / 是否配置 Claude Code？会影响 Claude Code 环境。[y/N]: ")) {
+    try {
+      printWriteResult("Claude Code settings", configureClaudeCode(config, home));
+    } catch (error) {
+      console.log(`Claude Code setup skipped: ${error.message}`);
+      console.log(manualClaude(config));
+    }
+  } else {
+    console.log(manualClaude(config));
+  }
+
+  if (await confirm(prompt, "Generate isolated Codex CLI profile? This does not affect Codex Desktop. / 是否生成 Codex CLI 独立 profile？不影响 Codex Desktop。[y/N]: ")) {
+    try {
+      createCodexProfile(config, "bridge", home, false);
+    } catch (error) {
+      if (!/already exists/.test(error.message)) {
+        console.log(`Codex CLI setup skipped: ${error.message}`);
+        console.log(manualCodexCli(config));
+      } else if (await confirm(prompt, "Existing Codex profile files found. Back up and overwrite? / 已有 Codex profile 文件，是否备份并覆盖？[y/N]: ")) {
+        try {
+          createCodexProfile(config, "bridge", home, true);
+        } catch (overwriteError) {
+          console.log(`Codex CLI setup skipped: ${overwriteError.message}`);
+          console.log(manualCodexCli(config));
+        }
+      } else {
+        console.log(manualCodexCli(config));
+      }
+    }
+  } else {
+    console.log(manualCodexCli(config));
+  }
+
+  console.log("Codex Desktop setup changes the default Codex Desktop provider.");
+  console.log("配置 Codex Desktop 会改变 Codex Desktop 默认 provider。");
+  if (await confirm(prompt, "Configure Codex Desktop default provider? / 是否配置 Codex Desktop 默认 provider？[y/N]: ")) {
+    if (await confirm(prompt, "Confirm Codex Desktop default change? / 确认修改 Codex Desktop 默认配置？[y/N]: ")) {
+      try {
+        printWriteResult("Codex Desktop config", configureCodexDesktop(config, home));
+      } catch (error) {
+        console.log(`Codex Desktop setup skipped: ${error.message}`);
+        console.log(manualCodexDesktop(config));
+      }
+    } else {
+      console.log(manualCodexDesktop(config));
+    }
+  } else {
+    console.log(manualCodexDesktop(config));
+  }
+}
+
+async function initConfig(out, runDoctor, home) {
   const prompt = createPrompt();
   try {
     console.log("LLM Coding Bridge setup / LLM Coding Bridge 配置向导");
@@ -91,7 +165,9 @@ async function initConfig(out, runDoctor) {
     console.log(`配置已写入：${file}`);
     console.log("Set the configured environment variable before starting.");
     console.log("启动前设置配置中的环境变量。");
-    if (runDoctor !== false) await doctor(loadConfig(file));
+    const loaded = loadConfig(file);
+    if (runDoctor !== false) await doctor(loaded);
+    await configureClients(prompt, loaded, home);
   } finally {
     prompt.close();
   }
@@ -148,7 +224,7 @@ async function main() {
     return;
   }
   if (args.command === "template") return printTemplate(args.template || "codex");
-  if (args.command === "init") return initConfig(args.out, args.doctor);
+  if (args.command === "init") return initConfig(args.out, args.doctor, args.home);
   if (args.command === "doctor") return doctor(loadConfig(args.config), args.deep, args.tools);
   if (args.command === "status") return status(loadConfig(args.config));
   if (args.command === "codex-profile") return createCodexProfile(loadConfig(args.config), args.name, args.home, args.force);

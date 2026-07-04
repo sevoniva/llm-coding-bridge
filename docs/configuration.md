@@ -52,12 +52,13 @@ API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
 Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
+Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 
 Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
-Set key: export LLM_API_KEY="..."
-设置 Key：export LLM_API_KEY="..."
 ```
+
+Client setup defaults to `No`. When enabled, `init` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`.
 
 Prompt reference:
 
@@ -72,6 +73,7 @@ Prompt reference:
 | `API key command` | Optional command that prints the upstream API key. Recommended for background services. | Keychain or secret-manager command |
 | `Temperature` | Sampling temperature sent to the upstream provider. | `0` for coding workflows |
 | `Local auth token` | Optional bearer/x-api-key token clients must present. Leave blank to disable. Strongly recommended when binding to a non-loopback address. | Random secret, or blank |
+| `Configure local clients now?` | Optional client setup for Claude Code, Codex CLI, and Codex Desktop. Defaults to no writes. | `N`, then configure clients only when ready |
 
 Generated config:
 
@@ -173,7 +175,7 @@ By default the bridge listens on `127.0.0.1` and does not require auth. To requi
 }
 ```
 
-Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time. When `localToken` is set, update the Codex profile's `experimental_bearer_token` and Claude's `ANTHROPIC_API_KEY` to the same value. Strongly recommended when binding to a non-loopback address.
+Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time. When `localToken` is set, update the Codex profile's `experimental_bearer_token` and Claude's `ANTHROPIC_AUTH_TOKEN` to the same value. Strongly recommended when binding to a non-loopback address.
 
 ## 3b. Multiple Upstreams
 
@@ -309,6 +311,7 @@ llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name
 ```
 
 The command writes `~/.codex/bridge.config.toml` and a local Codex model catalog. Use `--force` to overwrite generated files.
+When generated files already exist and are overwritten, the command creates `.bak-YYYYMMDD-HHMMSS` backups first.
 
 Run Codex CLI with the profile:
 
@@ -375,6 +378,8 @@ stream_idle_timeout_ms = 600000
 
 Restart Codex Desktop after the change. This makes the bridge the default provider for Codex Desktop and for Codex CLI sessions that do not pass `--profile`.
 
+The `init` guide can write this Desktop config after a separate confirmation. Existing `~/.codex/config.toml` is backed up first.
+
 ## 6. Configure Claude Code
 
 Print the template:
@@ -387,7 +392,7 @@ Temporary session:
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
-ANTHROPIC_API_KEY="local" \
+ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
@@ -395,13 +400,22 @@ Notes:
 
 - `ANTHROPIC_BASE_URL` should not include `/v1`.
 - `--setting-sources local` prevents existing user settings from overriding the test.
-- `ANTHROPIC_API_KEY` is only used by the local bridge for client compatibility; upstream authentication is configured in `~/.llm-coding-bridge/config.json`.
+- `ANTHROPIC_AUTH_TOKEN` is only used by the local bridge for client compatibility; upstream authentication is configured in `~/.llm-coding-bridge/config.json`.
 
 For persistent Claude Code use, add these environment variables to your shell profile or Claude settings:
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
-export ANTHROPIC_API_KEY="local"
+export ANTHROPIC_AUTH_TOKEN="local"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="model-name"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="model-name"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="model-name"
+```
+
+Or let `init` merge them into `~/.claude/settings.json`. Existing settings are backed up first:
+
+```text
+~/.claude/settings.json.bak-YYYYMMDD-HHMMSS
 ```
 
 ## 7. macOS Autostart
@@ -509,7 +523,7 @@ Use an isolated check:
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
-ANTHROPIC_API_KEY="local" \
+ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
@@ -586,12 +600,13 @@ API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
 Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
+Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 
 Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
-Set key: export LLM_API_KEY="..."
-设置 Key：export LLM_API_KEY="..."
 ```
+
+客户端配置默认不写入。确认后，`init` 可以合并 Claude Code 配置、生成 Codex CLI 独立 profile，或在单独确认后配置 Codex Desktop。已有文件会先创建 `.bak-YYYYMMDD-HHMMSS` 备份。
 
 字段说明：
 
@@ -606,6 +621,7 @@ Set key: export LLM_API_KEY="..."
 | `API key command` | 可选。输出上游 API Key 的命令，适合后台服务和开机自启。 | Keychain 或密钥管理命令 |
 | `Temperature` | 发送给上游服务的采样温度。 | 编码场景建议 `0` |
 | `Local auth token` | 可选。客户端必须携带的 bearer/x-api-key token，留空则不启用。绑非 loopback 时强烈建议配置。 | 随机密钥，或留空 |
+| `Configure local clients now?` | 可选配置 Claude Code、Codex CLI 和 Codex Desktop。默认不写文件。 | `N`，需要时再确认配置 |
 
 生成配置示例：
 
@@ -705,7 +721,7 @@ security add-generic-password \
 }
 ```
 
-客户端须带 `Authorization: Bearer your-secret` 或 `x-api-key: your-secret`。`/health` 不鉴权。比较为常量时间。配置 localToken 后，Codex profile 的 `experimental_bearer_token` 和 Claude 的 `ANTHROPIC_API_KEY` 要改成同一个值。绑非 loopback 时强烈建议启用。
+客户端须带 `Authorization: Bearer your-secret` 或 `x-api-key: your-secret`。`/health` 不鉴权。比较为常量时间。配置 localToken 后，Codex profile 的 `experimental_bearer_token` 和 Claude 的 `ANTHROPIC_AUTH_TOKEN` 要改成同一个值。绑非 loopback 时强烈建议启用。
 
 ## 3b. 多上游
 
@@ -840,7 +856,7 @@ stream_idle_timeout_ms = 600000
 llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name bridge
 ```
 
-命令会写入 `~/.codex/bridge.config.toml` 和本地 Codex model catalog。已有生成文件时使用 `--force` 覆盖。
+命令会写入 `~/.codex/bridge.config.toml` 和本地 Codex model catalog。已有生成文件时使用 `--force` 覆盖；覆盖前会创建 `.bak-YYYYMMDD-HHMMSS` 备份。
 
 使用 profile 启动：
 
@@ -907,6 +923,8 @@ stream_idle_timeout_ms = 600000
 
 修改后重启 Codex Desktop。这样会把 bridge 作为 Codex Desktop 默认 provider，也会影响没有使用 `--profile` 的 Codex CLI 会话。
 
+`init` 向导也可以在单独确认后写入 Desktop 配置。已有 `~/.codex/config.toml` 会先备份。
+
 ## 6. 配置 Claude Code
 
 输出模板：
@@ -919,7 +937,7 @@ llm-coding-bridge template claude
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
-ANTHROPIC_API_KEY="local" \
+ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
@@ -927,13 +945,22 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 
 - `ANTHROPIC_BASE_URL` 不带 `/v1`。
 - `--setting-sources local` 用于避免现有用户配置覆盖本次验证。
-- `ANTHROPIC_API_KEY` 只是本地客户端兼容值；真实上游认证在 bridge 配置中完成。
+- `ANTHROPIC_AUTH_TOKEN` 只是本地客户端兼容值；真实上游认证在 bridge 配置中完成。
 
 长期使用可把环境变量写入 shell profile 或 Claude 配置：
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
-export ANTHROPIC_API_KEY="local"
+export ANTHROPIC_AUTH_TOKEN="local"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="model-name"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="model-name"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="model-name"
+```
+
+也可以让 `init` 合并写入 `~/.claude/settings.json`。已有配置会先备份：
+
+```text
+~/.claude/settings.json.bak-YYYYMMDD-HHMMSS
 ```
 
 ## 7. macOS 开机自启
@@ -1037,7 +1064,7 @@ llm-coding-bridge doctor --config ~/.llm-coding-bridge/config.json
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
-ANTHROPIC_API_KEY="local" \
+ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 

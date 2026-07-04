@@ -31,7 +31,7 @@ Run the bilingual setup guide:
 llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```
 
-The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, and temperature:
+The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, temperature, and optional client setup:
 
 ```text
 Listen host / 本地监听地址 [127.0.0.1]:
@@ -42,7 +42,11 @@ Upstream model / 上游模型名称:
 API key environment variable / API Key 环境变量 [LLM_API_KEY]:
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]:
+Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
+Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 ```
+
+Client setup defaults to `No`. When enabled, the guide can update Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`.
 
 For complete setup instructions, see [Configuration Guide](docs/configuration.md).
 
@@ -174,7 +178,7 @@ llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name
 codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
-Use `--force` to overwrite an existing generated profile.
+Use `--force` to overwrite an existing generated profile. Existing generated files are backed up first.
 
 The check should show:
 
@@ -191,7 +195,7 @@ llm-coding-bridge install-service --config ~/.llm-coding-bridge/config.json
 curl http://127.0.0.1:18080/health
 ```
 
-Then back up `~/.codex/config.toml`, place the same provider block and top-level `model` / `model_provider` values in `~/.codex/config.toml`, and restart Codex Desktop.
+Then back up `~/.codex/config.toml`, place the same provider block and top-level `model` / `model_provider` values in `~/.codex/config.toml`, and restart Codex Desktop. The `init` guide can do this after an explicit Desktop confirmation.
 
 Print the Codex Desktop template:
 
@@ -213,16 +217,21 @@ Use the local Anthropic-compatible endpoint:
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
-export ANTHROPIC_API_KEY="local"
+export ANTHROPIC_AUTH_TOKEN="local"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="your-model"
 ```
 
 The bridge exposes `/v1/messages` and `/v1/messages/count_tokens`.
+
+Persistent Claude Code settings can be written by `init`. If `~/.claude/settings.json` exists, it is backed up before the `env` object is merged.
 
 For an isolated Claude Code check that does not read existing user settings:
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
-ANTHROPIC_API_KEY="local" \
+ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
@@ -281,6 +290,8 @@ npm install -g @sevoniva/llm-coding-bridge
 llm-coding-bridge init --out ~/.llm-coding-bridge/config.json
 ```
 
+`init` 会在 bridge 配置和检测之后询问是否配置 Claude Code、Codex CLI profile 和 Codex Desktop。默认不写客户端配置；确认写入前会先备份已有文件，备份后缀为 `.bak-YYYYMMDD-HHMMSS`。Codex Desktop 会改变默认 provider，需要单独确认。
+
 检测配置：
 
 ```bash
@@ -309,7 +320,7 @@ llm-coding-bridge codex-profile --config ~/.llm-coding-bridge/config.json --name
 codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
-已有生成文件时使用 `--force` 覆盖。
+已有生成文件时使用 `--force` 覆盖；覆盖前会先备份。
 
 输出中应看到：
 
@@ -332,7 +343,7 @@ curl http://127.0.0.1:18080/health
 llm-coding-bridge restart-service --config ~/.llm-coding-bridge/config.json
 ```
 
-然后备份 `~/.codex/config.toml`，把同一段 provider 配置和顶部的 `model` / `model_provider` 写入 `~/.codex/config.toml`，修改后重启桌面端。
+然后备份 `~/.codex/config.toml`，把同一段 provider 配置和顶部的 `model` / `model_provider` 写入 `~/.codex/config.toml`，修改后重启桌面端。也可以在 `init` 中确认后自动写入。
 
 输出 Codex Desktop 模板：
 
@@ -346,14 +357,17 @@ Claude 类客户端配置：
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
-export ANTHROPIC_API_KEY="local"
+export ANTHROPIC_AUTH_TOKEN="local"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="your-model"
 ```
 
 如果只想临时验证，不读取现有 `~/.claude/settings.json`：
 
 ```bash
 ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
-ANTHROPIC_API_KEY="local" \
+ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
