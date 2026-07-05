@@ -11,7 +11,7 @@ name = "LLM Coding Bridge"
 base_url = "http://127.0.0.1:18080/v1"
 wire_api = "responses"
 requires_openai_auth = true
-experimental_bearer_token = "local"  # replace with server.localToken if configured
+experimental_bearer_token = "local"  # use server.localToken, or the upstream key when apiKeySource=client
 request_max_retries = 1
 stream_max_retries = 1
 stream_idle_timeout_ms = 600000

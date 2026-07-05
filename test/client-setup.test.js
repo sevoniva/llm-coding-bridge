@@ -92,6 +92,7 @@ async function main() {
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
+    "",
     "EXAMPLE_API_KEY",
     "",
     "0",
@@ -105,6 +106,28 @@ async function main() {
   assert.equal(fs.existsSync(path.join(cliHome, ".codex", "bridge.config.toml")), false);
   assert.equal(fs.existsSync(path.join(cliHome, ".codex", "config.toml")), false);
 
+  const clientKeyHome = tmpHome("client-key");
+  const clientKeyInitPath = path.join(clientKeyHome, "config.json");
+  const clientKeyInit = await runCli(cli, ["init", "--out", clientKeyInitPath, "--home", clientKeyHome, "--no-doctor"], [
+    "127.0.0.1",
+    "18080",
+    "Example Provider",
+    "https://api.example.com/v1",
+    "example-model",
+    "client",
+    "0",
+    "",
+    "",
+  ].join("\n"));
+  assert.equal(clientKeyInit.code, 0, clientKeyInit.stderr || clientKeyInit.stdout);
+  assert.match(clientKeyInit.stdout, /Client requests must include the upstream API key/);
+  assert.match(clientKeyInit.stdout, /ANTHROPIC_AUTH_TOKEN=<upstream-api-key>/);
+  assert.doesNotMatch(clientKeyInit.stdout, /ANTHROPIC_AUTH_TOKEN=local/);
+  const clientKeyConfig = JSON.parse(fs.readFileSync(clientKeyInitPath, "utf8"));
+  assert.equal(clientKeyConfig.upstream.apiKeySource, "client");
+  assert.equal("apiKeyEnv" in clientKeyConfig.upstream, false);
+  assert.equal("apiKeyCommand" in clientKeyConfig.upstream, false);
+
   const guardedHome = tmpHome("guarded");
   const guardedInitPath = path.join(guardedHome, "config.json");
   const guarded = await runCli(cli, ["init", "--out", guardedInitPath, "--home", guardedHome, "--no-doctor"], [
@@ -113,6 +136,7 @@ async function main() {
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
+    "",
     "EXAMPLE_API_KEY",
     "",
     "0",
@@ -134,6 +158,7 @@ async function main() {
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
+    "",
     "EXAMPLE_API_KEY",
     "",
     "0",

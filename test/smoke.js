@@ -112,7 +112,7 @@ async function main() {
       upstreamRequests += 1;
       const payload = JSON.parse(raw);
       const prompt = payload.messages[payload.messages.length - 1].content;
-      if (prompt.includes("client key") && req.headers.authorization !== "Bearer client-upstream-key") {
+      if ((payload.model === "client-key-model" || prompt.includes("client key")) && req.headers.authorization !== "Bearer client-upstream-key") {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "missing client key" }));
         return;
@@ -318,7 +318,7 @@ async function main() {
     upstream: {
       name: "client-key-upstream",
       baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
-      model: "fake-model",
+      model: "client-key-model",
       apiKeySource: "client"
     }
   }, null, 2));
@@ -326,11 +326,11 @@ async function main() {
   const missingClientKey = await fetch(`http://127.0.0.1:${clientKeyBridgePort}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "client key" }], stream: false }),
+    body: JSON.stringify({ model: "client-key-model", messages: [{ role: "user", content: "client key" }], stream: false }),
   });
   assert.equal(missingClientKey.status, 401);
   const clientKeyChat = await requestJson(`http://127.0.0.1:${clientKeyBridgePort}/v1/chat/completions`, {
-    model: "fake-model",
+    model: "client-key-model",
     messages: [{ role: "user", content: "client key" }],
     stream: false,
   }, { Authorization: "Bearer client-upstream-key" });
@@ -343,7 +343,7 @@ async function main() {
       "x-api-key": "client-upstream-key",
     },
     body: JSON.stringify({
-      model: "fake-model",
+      model: "client-key-model",
       max_tokens: 64,
       messages: [{ role: "user", content: "client key messages" }],
       stream: false,
@@ -353,6 +353,11 @@ async function main() {
   assert.equal(clientKeyMessages.status, 200, clientKeyMessagesText);
   const clientKeyMessagesBody = JSON.parse(clientKeyMessagesText);
   assert.equal(clientKeyMessagesBody.content[0].text, "echo:client key messages");
+  const missingClientDoctorKey = await runCli(cli, ["doctor", "--config", clientKeyConfigPath]);
+  assert.notEqual(missingClientDoctorKey.code, 0);
+  assert.match(missingClientDoctorKey.stderr, /LLM_CODING_BRIDGE_CLIENT_API_KEY/);
+  const clientKeyDoctor = await runCli(cli, ["doctor", "--config", clientKeyConfigPath], { env: { LLM_CODING_BRIDGE_CLIENT_API_KEY: "client-upstream-key" } });
+  assert.equal(clientKeyDoctor.code, 0, clientKeyDoctor.stderr || clientKeyDoctor.stdout);
   clientKeyBridge.kill("SIGTERM");
   await new Promise((resolve) => clientKeyBridge.on("close", resolve));
 
@@ -362,20 +367,20 @@ async function main() {
     upstream: {
       name: "client-key-upstream",
       baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
-      model: "fake-model",
+      model: "client-key-model",
       apiKeySource: "client"
     }
   }, null, 2));
   const { child: clientKeyAuthBridge, port: clientKeyAuthBridgePort } = await spawnBridge(cli, clientKeyAuthConfigPath);
   const missingUpstreamKey = await requestRaw(`http://127.0.0.1:${clientKeyAuthBridgePort}/v1/chat/completions`, {
-    model: "fake-model",
+    model: "client-key-model",
     messages: [{ role: "user", content: "client key" }],
     stream: false,
   }, { Authorization: "Bearer local-token" });
   assert.equal(missingUpstreamKey.status, 401);
   assert.match(missingUpstreamKey.text, /Missing client API key/);
   const explicitUpstreamKey = await requestJson(`http://127.0.0.1:${clientKeyAuthBridgePort}/v1/chat/completions`, {
-    model: "fake-model",
+    model: "client-key-model",
     messages: [{ role: "user", content: "client key" }],
     stream: false,
   }, { Authorization: "Bearer local-token", "x-upstream-api-key": "client-upstream-key" });
@@ -425,6 +430,7 @@ async function main() {
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
+    "",
     "EXAMPLE_API_KEY",
     "",
     "0",

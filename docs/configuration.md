@@ -42,14 +42,15 @@ The command starts an interactive bilingual setup flow:
 
 ```text
 LLM Coding Bridge setup / LLM Coding Bridge 配置向导
-API keys are read from environment variables or commands and are not written to config files.
-API Key 通过环境变量或命令读取，不写入配置文件。
+API keys are not written to config files. Use local for env/command, or client for provider switchers.
+配置文件不写入 API Key。local 表示从环境变量/命令读取，client 表示由客户端或切换工具传入。
 
 Listen host / 本地监听地址 [127.0.0.1]: 127.0.0.1
 Listen port / 本地监听端口 [18080]: 18080
 Provider name / 上游服务名称 [Custom Provider]: Custom Provider
 Upstream base URL / 上游 Base URL: https://api.example.com/v1
 Upstream model / 上游模型名称: model-name
+API key source (local/client) / API Key 来源（local/client）[local]: local
 API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
@@ -71,8 +72,9 @@ Prompt reference:
 | `Provider name` | Display name for logs and doctor output. | Provider or team name |
 | `Upstream base URL` | OpenAI-compatible upstream base URL. Include `/v1`. | `https://api.example.com/v1` |
 | `Upstream model` | Model name sent to the upstream provider. | Provider model ID |
-| `API key environment variable` | Environment variable used to read the upstream API key. | `LLM_API_KEY` |
-| `API key command` | Optional command that prints the upstream API key. Recommended for background services. | Keychain or secret-manager command |
+| `API key source` | `local` lets the bridge read the upstream key from env/command. `client` forwards the key sent by the client or provider switcher. | `local`, or `client` with a provider switcher |
+| `API key environment variable` | Shown when source is `local`. Environment variable used to read the upstream API key. | `LLM_API_KEY` |
+| `API key command` | Shown when source is `local`. Optional command that prints the upstream API key. Recommended for background services. | Keychain or secret-manager command |
 | `Temperature` | Sampling temperature sent to the upstream provider. | `0` for coding workflows |
 | `Local auth token` | Optional bearer/x-api-key token clients must present. Leave blank to disable. Strongly recommended when binding to a non-loopback address. | Random secret, or blank |
 | `Configure local clients now?` | Optional client setup for Claude Code, Codex CLI, and Codex Desktop. Defaults to no writes. | `N`, then configure clients only when ready |
@@ -97,6 +99,20 @@ Generated config:
 ```
 
 Do not store API keys in this file.
+
+When `API key source` is `client`, the generated upstream uses `apiKeySource` and does not include `apiKeyEnv` or `apiKeyCommand`:
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client",
+    "temperature": 0
+  }
+}
+```
 
 Optional vision metadata:
 
@@ -191,6 +207,12 @@ x-api-key
 ```
 
 For provider switchers that send `Authorization: Bearer <key>`, no extra bridge setting is needed. If `server.localToken` is also enabled, use `Authorization` for the local token and `x-upstream-api-key` for the upstream key.
+
+For generated Codex or Claude configs in this mode, set the client token to the real upstream key, or let the provider switcher manage the client config. To run `doctor`, provide a probe key:
+
+```bash
+LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
+```
 
 ## 3a. Local Auth
 
@@ -310,6 +332,8 @@ stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
 
+Use `local` for local key mode. In client key mode, use the upstream key here or let a provider switcher manage this client config.
+
 Use a separate Codex CLI profile if you do not want to change the default provider:
 
 ```toml
@@ -427,7 +451,7 @@ Notes:
 
 - `ANTHROPIC_BASE_URL` should not include `/v1`.
 - `--setting-sources local` prevents existing user settings from overriding the test.
-- `ANTHROPIC_AUTH_TOKEN` is only used by the local bridge for client compatibility; upstream authentication is configured in `~/.llm-coding-bridge/config.json`.
+- In `local` key mode, `ANTHROPIC_AUTH_TOKEN` is a local compatibility token. In `client` key mode, set it to the upstream key or let a provider switcher manage it.
 
 For persistent Claude Code use, add these environment variables to your shell profile or Claude settings:
 
@@ -617,14 +641,15 @@ llm-coding-bridge init
 
 ```text
 LLM Coding Bridge setup / LLM Coding Bridge 配置向导
-API keys are read from environment variables or commands and are not written to config files.
-API Key 通过环境变量或命令读取，不写入配置文件。
+API keys are not written to config files. Use local for env/command, or client for provider switchers.
+配置文件不写入 API Key。local 表示从环境变量/命令读取，client 表示由客户端或切换工具传入。
 
 Listen host / 本地监听地址 [127.0.0.1]: 127.0.0.1
 Listen port / 本地监听端口 [18080]: 18080
 Provider name / 上游服务名称 [Custom Provider]: Custom Provider
 Upstream base URL / 上游 Base URL: https://api.example.com/v1
 Upstream model / 上游模型名称: model-name
+API key source (local/client) / API Key 来源（local/client）[local]: local
 API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
@@ -646,8 +671,9 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 | `Provider name` | 用于日志和 doctor 输出的显示名称。 | 服务名称或团队名称 |
 | `Upstream base URL` | OpenAI-compatible 上游 Base URL，需要包含 `/v1`。 | `https://api.example.com/v1` |
 | `Upstream model` | 发送给上游服务的模型名称。 | 上游模型 ID |
-| `API key environment variable` | 读取上游 API Key 的环境变量名。 | `LLM_API_KEY` |
-| `API key command` | 可选。输出上游 API Key 的命令，适合后台服务和开机自启。 | Keychain 或密钥管理命令 |
+| `API key source` | `local` 表示 bridge 从环境变量/命令读取上游 Key；`client` 表示转发客户端或 provider switcher 传入的 Key。 | 默认 `local`；使用切换工具时选 `client` |
+| `API key environment variable` | source 为 `local` 时出现。读取上游 API Key 的环境变量名。 | `LLM_API_KEY` |
+| `API key command` | source 为 `local` 时出现。可选，输出上游 API Key 的命令，适合后台服务和开机自启。 | Keychain 或密钥管理命令 |
 | `Temperature` | 发送给上游服务的采样温度。 | 编码场景建议 `0` |
 | `Local auth token` | 可选。客户端必须携带的 bearer/x-api-key token，留空则不启用。绑非 loopback 时强烈建议配置。 | 随机密钥，或留空 |
 | `Configure local clients now?` | 可选配置 Claude Code、Codex CLI 和 Codex Desktop。默认不写文件。 | `N`，需要时再确认配置 |
@@ -672,6 +698,20 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 ```
 
 配置文件不保存 API Key。
+
+当 `API key source` 选择 `client` 时，生成的上游配置使用 `apiKeySource`，不会包含 `apiKeyEnv` 或 `apiKeyCommand`：
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client",
+    "temperature": 0
+  }
+}
+```
 
 可选视觉能力声明：
 
@@ -764,6 +804,12 @@ x-api-key
 ```
 
 如果 provider switcher 发送 `Authorization: Bearer <key>`，bridge 不需要额外配置。如果同时启用 `server.localToken`，`Authorization` 放本地 token，上游 key 放 `x-upstream-api-key`。
+
+此模式下生成 Codex 或 Claude 配置时，客户端 token 要填真实上游 Key；也可以交给 provider switcher 管理客户端配置。运行 `doctor` 时提供检测用 Key：
+
+```bash
+LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
+```
 
 ## 3a. 本地鉴权
 
@@ -883,6 +929,8 @@ stream_max_retries = 1
 stream_idle_timeout_ms = 600000
 ```
 
+`local` 适用于 local key 模式。client key 模式下，这里填上游 Key，或交给 provider switcher 管理客户端配置。
+
 如果不想影响默认 Codex 配置，Codex CLI 建议使用独立 profile：
 
 ```toml
@@ -999,7 +1047,7 @@ claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 
 - `ANTHROPIC_BASE_URL` 不带 `/v1`。
 - `--setting-sources local` 用于避免现有用户配置覆盖本次验证。
-- `ANTHROPIC_AUTH_TOKEN` 只是本地客户端兼容值；真实上游认证在 bridge 配置中完成。
+- `local` key 模式下，`ANTHROPIC_AUTH_TOKEN` 是本地兼容 token。`client` key 模式下，它应是真实上游 Key，或交给 provider switcher 管理。
 
 长期使用可把环境变量写入 shell profile 或 Claude 配置：
 

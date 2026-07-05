@@ -41,12 +41,15 @@ Listen port / 本地监听端口 [18080]:
 Provider name / 上游服务名称 [Custom Provider]:
 Upstream base URL / 上游 Base URL:
 Upstream model / 上游模型名称:
+API key source (local/client) / API Key 来源（local/client）[local]:
 API key environment variable / API Key 环境变量 [LLM_API_KEY]:
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]:
 Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
 Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 ```
+
+Use `local` when the bridge reads the upstream key from an environment variable or command. Use `client` when a local provider switcher manages the key and sends it with each request.
 
 Client setup defaults to `No`. When enabled, the guide can update Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`.
 
@@ -74,6 +77,20 @@ API keys are not stored in the config file:
 
 ```bash
 export LLM_API_KEY="..."
+```
+
+Client-managed key mode writes this instead:
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client",
+    "temperature": 0
+  }
+}
 ```
 
 ## Multiple upstreams
@@ -122,6 +139,12 @@ To let a client-side router manage upstream keys, set `apiKeySource` to `client`
 ```
 
 The bridge forwards the client request key to the upstream. It reads `x-upstream-api-key` first, then `Authorization: Bearer ...`, then `x-api-key`. This is useful when tools such as provider switchers own the real upstream key. If `server.localToken` is enabled, send the local token in `Authorization` and the upstream key in `x-upstream-api-key`.
+
+For generated Codex or Claude configs in client-key mode, set the client token to the real upstream key, or let the provider switcher manage the client config. To run `doctor` with `apiKeySource: "client"`, provide a probe key:
+
+```bash
+LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
+```
 
 For background services, prefer a command-backed key so launchd does not depend on shell environment variables:
 
@@ -180,7 +203,7 @@ name = "LLM Coding Bridge"
 base_url = "http://127.0.0.1:18080/v1"
 wire_api = "responses"
 requires_openai_auth = true
-experimental_bearer_token = "local"  # replace with server.localToken if configured
+experimental_bearer_token = "local"  # use server.localToken, or the upstream key when apiKeySource=client
 request_max_retries = 1
 stream_max_retries = 1
 stream_idle_timeout_ms = 600000
@@ -390,7 +413,7 @@ ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
 
-长期使用建议安装 macOS 自启动，并用 Keychain 命令读取 API Key，避免依赖终端环境变量。
+长期使用建议安装 macOS 自启动。API Key 可以由 bridge 通过环境变量/Keychain 命令读取，也可以由本地 provider switcher 管理并随请求传入。
 
 查看最近日志：
 
@@ -432,4 +455,4 @@ bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-up
 
 ### Why this package runs shell commands
 
-This is a local bridge: it reads API keys from the environment or an OS keychain (`apiKeyCommand`), installs a macOS launchd service (`launchctl`), and writes Codex/Claude profile files under your home directory. These require shell execution, environment-variable access, and filesystem writes — they are the package's purpose, not side effects. It has zero runtime dependencies and no install scripts.
+This is a local bridge: it reads API keys from the environment or an OS keychain (`apiKeyCommand`), or forwards client-provided upstream keys when `apiKeySource` is `client`. It can install a macOS launchd service (`launchctl`) and write Codex/Claude profile files under your home directory. These require shell execution, environment-variable access, and filesystem writes — they are the package's purpose, not side effects. It has zero runtime dependencies and no install scripts.

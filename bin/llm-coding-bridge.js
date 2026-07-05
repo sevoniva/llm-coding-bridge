@@ -82,6 +82,8 @@ function publicErrorMessage(error) {
       return "Missing client API key.";
     case "apiKeyCommand returned an empty token.":
       return "apiKeyCommand returned an empty token.";
+    case "Set LLM_CODING_BRIDGE_CLIENT_API_KEY to run doctor with apiKeySource=client.":
+      return "Set LLM_CODING_BRIDGE_CLIENT_API_KEY to run doctor with apiKeySource=client.";
     default:
       break;
   }
@@ -117,6 +119,15 @@ async function askNumber(prompt, question, fallback, label) {
     if (Number.isFinite(value)) return value;
     if (!prompt.interactive) throw new Error(`${label} must be a number: ${raw}`);
     console.log(`${label} must be a number. / ${label} 必须是数字。`);
+  }
+}
+
+async function askChoice(prompt, question, choices, fallback, label) {
+  for (;;) {
+    const value = valueOrDefault(await prompt.ask(question), fallback).toLowerCase();
+    if (choices.includes(value)) return value;
+    if (!prompt.interactive) throw new Error(`${label} must be one of: ${choices.join(", ")}`);
+    console.log(`${label} must be one of: ${choices.join(", ")}. / ${label} 只能是：${choices.join("、")}。`);
   }
 }
 
@@ -197,22 +208,25 @@ async function initConfig(out, runDoctor, home) {
   const prompt = createPrompt();
   try {
     console.log("LLM Coding Bridge setup / LLM Coding Bridge 配置向导");
-    console.log("API keys are read from environment variables or commands and are not written to config files.");
-    console.log("API Key 通过环境变量或命令读取，不写入配置文件。\n");
+    console.log("API keys are not written to config files. Use local for env/command, or client for provider switchers.");
+    console.log("配置文件不写入 API Key。local 表示从环境变量/命令读取，client 表示由客户端或切换工具传入。\n");
     const host = valueOrDefault(await prompt.ask("Listen host / 本地监听地址 [127.0.0.1]: "), "127.0.0.1");
     const port = await askNumber(prompt, "Listen port / 本地监听端口 [18080]: ", "18080", "Listen port");
     const name = valueOrDefault(await prompt.ask("Provider name / 上游服务名称 [Custom Provider]: "), "Custom Provider");
     const baseUrl = await askRequired(prompt, "Upstream base URL / 上游 Base URL: ", "Upstream base URL");
     const model = await askRequired(prompt, "Upstream model / 上游模型名称: ", "Upstream model");
-    const apiKeyEnv = valueOrDefault(await prompt.ask("API key environment variable / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY");
-    const apiKeyCommand = valueOrDefault(await prompt.ask("API key command (optional) / API Key 读取命令（可选）: "), "");
+    const keySource = await askChoice(prompt, "API key source (local/client) / API Key 来源（local/client）[local]: ", ["local", "client"], "local", "API key source");
+    const apiKeyEnv = keySource === "local" ? valueOrDefault(await prompt.ask("API key environment variable / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY") : "";
+    const apiKeyCommand = keySource === "local" ? valueOrDefault(await prompt.ask("API key command (optional) / API Key 读取命令（可选）: "), "") : "";
     const temperature = await askNumber(prompt, "Temperature / 采样温度 [0]: ", "0", "Temperature");
     const localToken = valueOrDefault(await prompt.ask("Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）: "), "");
 
     const config = {
       server: { host, port, ...(localToken ? { localToken } : {}) },
-      upstream: { name, baseUrl, model, apiKeyEnv, temperature },
+      upstream: { name, baseUrl, model, temperature },
     };
+    if (keySource === "client") config.upstream.apiKeySource = "client";
+    else config.upstream.apiKeyEnv = apiKeyEnv;
     if (apiKeyCommand) config.upstream.apiKeyCommand = apiKeyCommand;
 
     const file = path.resolve(out);
@@ -220,8 +234,13 @@ async function initConfig(out, runDoctor, home) {
     fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
     console.log(`\nWrote config: ${file}`);
     console.log(`配置已写入：${file}`);
-    console.log("Set the configured environment variable before starting.");
-    console.log("启动前设置配置中的环境变量。");
+    if (keySource === "client") {
+      console.log("Client requests must include the upstream API key.");
+      console.log("客户端请求必须携带上游 API Key。");
+    } else {
+      console.log("Set the configured environment variable before starting.");
+      console.log("启动前设置配置中的环境变量。");
+    }
     const loaded = loadConfig(file);
     if (runDoctor !== false) await doctor(loaded);
     await configureClients(prompt, loaded, home);
