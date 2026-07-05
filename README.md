@@ -108,6 +108,21 @@ Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-s
 
 `apiKeyCommand` results are cached in-process for 10 minutes by default to avoid spawning a command on every request. Override with `upstream.apiKeyCacheTtlMs`; set it to `0` to disable caching and resolve the key on every request. Each upstream in a multi-upstream config has an independent cache. If the upstream returns `401`, the cached key is dropped immediately so the next request re-resolves — this lets a rotated key recover without restarting the bridge.
 
+To let a client-side router manage upstream keys, set `apiKeySource` to `client` and remove `apiKeyEnv` / `apiKeyCommand`:
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client"
+  }
+}
+```
+
+The bridge forwards the client request key to the upstream. It reads `x-upstream-api-key` first, then `Authorization: Bearer ...`, then `x-api-key`. This is useful when tools such as provider switchers own the real upstream key. If `server.localToken` is enabled, send the local token in `Authorization` and the upstream key in `x-upstream-api-key`.
+
 For background services, prefer a command-backed key so launchd does not depend on shell environment variables:
 
 ```json
@@ -389,11 +404,27 @@ llm-coding-bridge logs --lines 80
 
 API Key 缓存：`apiKeyCommand` 结果默认缓存 10 分钟，用 `upstream.apiKeyCacheTtlMs` 覆盖，设 `0` 禁用。上游返回 401 时缓存立即失效，下次请求重新解析，轮换的 key 无需重启即可恢复。
 
+如果希望由客户端路由工具管理上游 Key，把 `apiKeySource` 设为 `client`，并删除 `apiKeyEnv` / `apiKeyCommand`：
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client"
+  }
+}
+```
+
+bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-upstream-api-key`、`Authorization: Bearer ...`、`x-api-key`。如果启用了 `server.localToken`，本地 token 放 `Authorization`，上游 key 放 `x-upstream-api-key`。
+
 ## Security
 
 - Config files should not contain API keys.
 - Use `apiKeyEnv` for interactive sessions.
 - Use `apiKeyCommand` for background services. Prefer the object form `{ "command": "/usr/bin/security", "args": [...] }` over the string form; the string form runs through `/bin/sh -lc` and is only for convenience.
+- Use `apiKeySource: "client"` when a local provider switcher owns the upstream key.
 - API key command results are cached in-process (default 10 min, override with `apiKeyCacheTtlMs`; set `0` to disable). The cache is busted automatically on an upstream 401.
 - Set `server.localToken` to require a bearer/x-api-key on every request. Strongly recommended when binding to a non-loopback address.
 - Request bodies are capped at 10 MB by default (`server.maxBodyBytes`).

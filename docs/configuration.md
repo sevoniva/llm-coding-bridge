@@ -167,6 +167,31 @@ security add-generic-password \
 
 The `apiKeyCommand` accepts either an object (`{ "command", "args" }`, run directly without a shell) or a string (run through `/bin/sh -lc`). Prefer the object form — it avoids shell interpretation and is the form `init` writes when given a keychain command. Results are cached in-process for 10 minutes by default; override with `upstream.apiKeyCacheTtlMs`, or set it to `0` to resolve the key on every request. If the upstream returns `401`, the cached key is dropped immediately so the next request re-resolves — a rotated key recovers without restarting the bridge.
 
+### Client-Provided Key
+
+Use this when a local provider switcher owns the real upstream key. The bridge config does not store or read an upstream key:
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client"
+  }
+}
+```
+
+The bridge forwards the client request key as the upstream bearer token. It reads headers in this order:
+
+```text
+x-upstream-api-key
+Authorization: Bearer <key>
+x-api-key
+```
+
+For provider switchers that send `Authorization: Bearer <key>`, no extra bridge setting is needed. If `server.localToken` is also enabled, use `Authorization` for the local token and `x-upstream-api-key` for the upstream key.
+
 ## 3a. Local Auth
 
 By default the bridge listens on `127.0.0.1` and does not require auth. To require a token, set `server.localToken`:
@@ -714,6 +739,31 @@ security add-generic-password \
 ```
 
 `apiKeyCommand` 接受对象（`{ "command", "args" }`，直接执行不走 shell）或字符串（走 `/bin/sh -lc`）两种形式。推荐对象形式——避免 shell 解释，`init` 写入 keychain 命令时也用这种。结果默认缓存 10 分钟，用 `upstream.apiKeyCacheTtlMs` 覆盖，设 `0` 每次请求重新解析。上游返回 401 时缓存立即失效，下次请求重新解析，轮换的 key 无需重启即可恢复。
+
+### 客户端传入 Key
+
+适合由本地 provider switcher 管理真实上游 Key 的场景。bridge 配置里不保存也不读取上游 Key：
+
+```json
+{
+  "upstream": {
+    "name": "Custom Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "model-name",
+    "apiKeySource": "client"
+  }
+}
+```
+
+bridge 会把客户端请求里的 key 作为上游 bearer token 转发。读取顺序：
+
+```text
+x-upstream-api-key
+Authorization: Bearer <key>
+x-api-key
+```
+
+如果 provider switcher 发送 `Authorization: Bearer <key>`，bridge 不需要额外配置。如果同时启用 `server.localToken`，`Authorization` 放本地 token，上游 key 放 `x-upstream-api-key`。
 
 ## 3a. 本地鉴权
 

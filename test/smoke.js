@@ -112,6 +112,11 @@ async function main() {
       upstreamRequests += 1;
       const payload = JSON.parse(raw);
       const prompt = payload.messages[payload.messages.length - 1].content;
+      if (prompt.includes("client key") && req.headers.authorization !== "Bearer client-upstream-key") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "missing client key" }));
+        return;
+      }
       if (prompt.includes("upstream fail")) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "authorization=secret-token" }));
@@ -306,6 +311,50 @@ async function main() {
   const doctorCode = await new Promise((resolve) => doctor.on("close", resolve));
   assert.equal(doctorCode, 0, doctorErr || doctorOut);
   assert.match(doctorOut, /OK/);
+
+  const clientKeyConfigPath = path.join(tmp, "client-key.config.json");
+  fs.writeFileSync(clientKeyConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: 0 },
+    upstream: {
+      name: "client-key-upstream",
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      model: "fake-model",
+      apiKeySource: "client"
+    }
+  }, null, 2));
+  const { child: clientKeyBridge, port: clientKeyBridgePort } = await spawnBridge(cli, clientKeyConfigPath);
+  const missingClientKey = await fetch(`http://127.0.0.1:${clientKeyBridgePort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "client key" }], stream: false }),
+  });
+  assert.equal(missingClientKey.status, 401);
+  const clientKeyChat = await requestJson(`http://127.0.0.1:${clientKeyBridgePort}/v1/chat/completions`, {
+    model: "fake-model",
+    messages: [{ role: "user", content: "client key" }],
+    stream: false,
+  }, { Authorization: "Bearer client-upstream-key" });
+  assert.equal(clientKeyChat.choices[0].message.content, "echo:client key");
+  const clientKeyMessages = await fetch(`http://127.0.0.1:${clientKeyBridgePort}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+      "x-api-key": "client-upstream-key",
+    },
+    body: JSON.stringify({
+      model: "fake-model",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "client key messages" }],
+      stream: false,
+    }),
+  });
+  const clientKeyMessagesText = await clientKeyMessages.text();
+  assert.equal(clientKeyMessages.status, 200, clientKeyMessagesText);
+  const clientKeyMessagesBody = JSON.parse(clientKeyMessagesText);
+  assert.equal(clientKeyMessagesBody.content[0].text, "echo:client key messages");
+  clientKeyBridge.kill("SIGTERM");
+  await new Promise((resolve) => clientKeyBridge.on("close", resolve));
 
   const deepDoctor = await runCli(cli, ["doctor", "--deep", "--config", configPath], { env: { FAKE_API_KEY: "upstream-key" } });
   assert.equal(deepDoctor.code, 0, deepDoctor.stderr || deepDoctor.stdout);
