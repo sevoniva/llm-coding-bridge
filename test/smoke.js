@@ -356,6 +356,33 @@ async function main() {
   clientKeyBridge.kill("SIGTERM");
   await new Promise((resolve) => clientKeyBridge.on("close", resolve));
 
+  const clientKeyAuthConfigPath = path.join(tmp, "client-key-auth.config.json");
+  fs.writeFileSync(clientKeyAuthConfigPath, JSON.stringify({
+    server: { host: "127.0.0.1", port: 0, localToken: "local-token" },
+    upstream: {
+      name: "client-key-upstream",
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      model: "fake-model",
+      apiKeySource: "client"
+    }
+  }, null, 2));
+  const { child: clientKeyAuthBridge, port: clientKeyAuthBridgePort } = await spawnBridge(cli, clientKeyAuthConfigPath);
+  const missingUpstreamKey = await requestRaw(`http://127.0.0.1:${clientKeyAuthBridgePort}/v1/chat/completions`, {
+    model: "fake-model",
+    messages: [{ role: "user", content: "client key" }],
+    stream: false,
+  }, { Authorization: "Bearer local-token" });
+  assert.equal(missingUpstreamKey.status, 401);
+  assert.match(missingUpstreamKey.text, /Missing client API key/);
+  const explicitUpstreamKey = await requestJson(`http://127.0.0.1:${clientKeyAuthBridgePort}/v1/chat/completions`, {
+    model: "fake-model",
+    messages: [{ role: "user", content: "client key" }],
+    stream: false,
+  }, { Authorization: "Bearer local-token", "x-upstream-api-key": "client-upstream-key" });
+  assert.equal(explicitUpstreamKey.choices[0].message.content, "echo:client key");
+  clientKeyAuthBridge.kill("SIGTERM");
+  await new Promise((resolve) => clientKeyAuthBridge.on("close", resolve));
+
   const deepDoctor = await runCli(cli, ["doctor", "--deep", "--config", configPath], { env: { FAKE_API_KEY: "upstream-key" } });
   assert.equal(deepDoctor.code, 0, deepDoctor.stderr || deepDoctor.stdout);
   assert.match(deepDoctor.stdout, /responses/);
