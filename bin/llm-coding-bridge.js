@@ -65,6 +65,37 @@ Without --config, commands use ./${CWD_CONFIG} if present,
 otherwise ~/.llm-coding-bridge/config.json. init writes there by default.`;
 }
 
+function publicErrorMessage(error) {
+  const message = String(error && error.message ? error.message : "");
+  switch (message) {
+    case "Missing upstream or upstreams.":
+      return "Missing upstream or upstreams.";
+    case "Missing upstream.baseUrl.":
+      return "Missing upstream.baseUrl.";
+    case "Missing upstream.model.":
+      return "Missing upstream.model.";
+    case "upstream.apiKeySource must be \"client\" when set.":
+      return "upstream.apiKeySource must be \"client\" when set.";
+    case "Missing upstream.apiKeyEnv, upstream.apiKeyCommand, or upstream.apiKeySource.":
+      return "Missing upstream.apiKeyEnv, upstream.apiKeyCommand, or upstream.apiKeySource.";
+    case "Missing client API key.":
+      return "Missing client API key.";
+    case "apiKeyCommand returned an empty token.":
+      return "apiKeyCommand returned an empty token.";
+    default:
+      break;
+  }
+  if (message.startsWith("Unknown argument:")) return "Unknown argument.";
+  if (message.startsWith("Unknown command:")) return "Unknown command.";
+  if (message.startsWith("Config file not found:")) return "Config file not found. Run \"llm-coding-bridge init\" to create one.";
+  if (message.startsWith("Config file is not valid JSON:")) return "Config file is not valid JSON.";
+  if (message.startsWith("apiKeyCommand exited with")) return "apiKeyCommand exited with a non-zero status.";
+  if (message.includes("already exists")) return "Target file already exists. Re-run with --force to overwrite.";
+  if (message.endsWith(" is required.")) return "A required value is missing.";
+  if (message.includes(" must be a number")) return "A numeric value is invalid.";
+  return "Command failed.";
+}
+
 function valueOrDefault(value, fallback) {
   const trimmed = String(value || "").trim();
   return trimmed || fallback;
@@ -115,7 +146,7 @@ async function configureClients(prompt, config, home) {
     try {
       printWriteResult("Claude Code settings", configureClaudeCode(config, home));
     } catch (error) {
-      console.log(`Claude Code setup skipped: ${error.message}`);
+      console.log(`Claude Code setup skipped: ${publicErrorMessage(error)}`);
       console.log(manualClaude(config));
     }
   } else {
@@ -127,13 +158,13 @@ async function configureClients(prompt, config, home) {
       createCodexProfile(config, "bridge", home, false);
     } catch (error) {
       if (!/already exists/.test(error.message)) {
-        console.log(`Codex CLI setup skipped: ${error.message}`);
+        console.log(`Codex CLI setup skipped: ${publicErrorMessage(error)}`);
         console.log(manualCodexCli(config));
       } else if (await confirm(prompt, "Existing Codex profile files found. Back up and overwrite? / 已有 Codex profile 文件，是否备份并覆盖？[y/N]: ")) {
         try {
           createCodexProfile(config, "bridge", home, true);
         } catch (overwriteError) {
-          console.log(`Codex CLI setup skipped: ${overwriteError.message}`);
+          console.log(`Codex CLI setup skipped: ${publicErrorMessage(overwriteError)}`);
           console.log(manualCodexCli(config));
         }
       } else {
@@ -151,7 +182,7 @@ async function configureClients(prompt, config, home) {
       try {
         printWriteResult("Codex Desktop config", configureCodexDesktop(config, home));
       } catch (error) {
-        console.log(`Codex Desktop setup skipped: ${error.message}`);
+        console.log(`Codex Desktop setup skipped: ${publicErrorMessage(error)}`);
         console.log(manualCodexDesktop(config));
       }
     } else {
@@ -265,7 +296,8 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`Error: ${error.message}`);
-  if (/^Unknown (argument|command)/.test(error.message)) console.error(`\n${usage()}`);
+  const message = publicErrorMessage(error);
+  console.error(`Error: ${message}`);
+  if (/^Unknown (argument|command)\.$/.test(message)) console.error(`\n${usage()}`);
   process.exitCode = 1;
 });

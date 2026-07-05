@@ -691,16 +691,16 @@ async function main() {
   const grace3Full = (grace3First.value ? Buffer.from(grace3First.value).toString("utf8") : "") + grace3Chunks.join("");
   assert.match(grace3Full, /\[DONE\]/);
 
-  // CLI 错误信息:缺配置文件时给出路径与 init 提示,而不是笼统失败
+  // CLI 错误信息:缺配置文件时给出安全提示,不输出原始路径
   const missingConfig = await runCli(cli, ["doctor", "--home", path.join(tmp, "no-such-home")], { cwd: tmp });
   assert.equal(missingConfig.code, 1);
-  assert.match(missingConfig.stderr, /Config file not found: .*config\.json/);
+  assert.match(missingConfig.stderr, /Config file not found/);
   assert.match(missingConfig.stderr, /llm-coding-bridge init/);
 
-  // CLI 错误信息:未知参数报具体参数并打印用法
+  // CLI 错误信息:未知参数打印用法,不回显原始参数
   const badArg = await runCli(cli, ["doctor", "--bogus"]);
   assert.equal(badArg.code, 1);
-  assert.match(badArg.stderr, /Unknown argument: --bogus/);
+  assert.match(badArg.stderr, /Unknown argument\./);
   assert.match(badArg.stderr, /Usage:/);
 
   // CLI 错误信息:配置文件不是合法 JSON
@@ -726,14 +726,14 @@ async function main() {
   assert.equal(homeStatus.code, 0, homeStatus.stderr || homeStatus.stdout);
   assert.match(homeStatus.stdout, /health/);
 
-  // init 非交互:必填项为空立刻报错,不再走到最后
+  // init 非交互:必填项为空立刻报错,不回显具体输入内容
   const badInit = spawn(process.execPath, [cli, "init", "--out", path.join(tmp, "bad-init.json"), "--no-doctor"], { stdio: ["pipe", "pipe", "pipe"] });
   badInit.stdin.end("\n\n\n\n");
   let badInitErr = "";
   badInit.stderr.on("data", (chunk) => { badInitErr += chunk; });
   const badInitCode = await new Promise((resolve) => badInit.on("close", resolve));
   assert.equal(badInitCode, 1);
-  assert.match(badInitErr, /Upstream base URL is required/);
+  assert.match(badInitErr, /A required value is missing/);
 
   // 请求体大小限制
   const bigBody = JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "x".repeat(11 * 1024 * 1024) }], stream: false });
