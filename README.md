@@ -33,11 +33,21 @@ llm-coding-bridge init
 
 The config is written to `~/.llm-coding-bridge/config.json` by default (override with `--out`). All commands read that file by default; a `llm-coding-bridge.config.json` in the current directory takes precedence, and `--config` overrides both.
 
+### Port migration in v0.5.0
+
+New configurations use port `37629` by default. The port remains configurable and is not reserved exclusively for this project.
+
+Package upgrades do not rewrite existing configuration files. To move an existing installation from `18080` to `37629`:
+
+1. Set `server.port` to `37629` in the bridge config.
+2. Update each client Base URL to use port `37629`.
+3. Run `llm-coding-bridge restart-service`, then verify `http://127.0.0.1:37629/health`.
+
 The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, temperature, and optional client setup:
 
 ```text
 Listen host / 本地监听地址 [127.0.0.1]:
-Listen port / 本地监听端口 [18080]:
+Listen port / 本地监听端口 [37629]:
 Provider name / 上游服务名称 [Custom Provider]:
 Upstream base URL / 上游 Base URL:
 Upstream model / 上游模型名称:
@@ -61,7 +71,7 @@ The generated file looks like this:
 {
   "server": {
     "host": "127.0.0.1",
-    "port": 18080
+    "port": 37629
   },
   "upstream": {
     "name": "Custom Provider",
@@ -99,7 +109,7 @@ Route requests to different providers by the `model` field the client sends. Use
 
 ```json
 {
-  "server": { "host": "127.0.0.1", "port": 18080 },
+  "server": { "host": "127.0.0.1", "port": 37629 },
   "upstreams": [
     { "name": "OpenAI", "model": "gpt-4o", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" },
     { "name": "Other", "model": "other-model", "baseUrl": "https://api.other.com/v1", "apiKeyEnv": "OTHER_API_KEY" }
@@ -115,7 +125,7 @@ By default the bridge listens on `127.0.0.1` and does not require auth. To requi
 
 ```json
 {
-  "server": { "host": "127.0.0.1", "port": 18080, "localToken": "your-secret" }
+  "server": { "host": "127.0.0.1", "port": 37629, "localToken": "your-secret" }
 }
 ```
 
@@ -159,6 +169,24 @@ For background services, prefer a command-backed key so launchd does not depend 
 }
 ```
 
+## ZCode and provider compatibility
+
+OpenAI-compatible endpoints do not always handle client extension fields and non-streaming responses consistently. The bridge provides compatibility handling for ZCode and other OpenAI-compatible clients.
+
+Enable request cleanup when an upstream rejects `chat_template_kwargs`:
+
+```json
+{
+  "upstream": {
+    "stripChatTemplateKwargs": true
+  }
+}
+```
+
+This option removes `chat_template_kwargs` from the top-level request and from `extra_body.chat_template_kwargs`. All other request fields are preserved.
+
+For a non-streaming request, the bridge also accepts an upstream response delivered as a complete SSE sequence and converts it into a standard OpenAI `chat.completion` JSON object. This keeps ZCode context compaction and other `stream: false` workflows compatible with endpoints that use SSE framing for non-streaming responses. Response normalization is limited to non-streaming requests; streaming response bodies pass through unchanged. Request cleanup applies to both modes when enabled.
+
 ## Run
 
 ```bash
@@ -170,7 +198,7 @@ llm-coding-bridge serve
 Then point clients at:
 
 ```text
-http://127.0.0.1:18080/v1
+http://127.0.0.1:37629/v1
 ```
 
 For a local service check that does not call the upstream model:
@@ -200,7 +228,7 @@ disable_response_storage = true
 
 [model_providers.llm-coding-bridge]
 name = "LLM Coding Bridge"
-base_url = "http://127.0.0.1:18080/v1"
+base_url = "http://127.0.0.1:37629/v1"
 wire_api = "responses"
 requires_openai_auth = true
 experimental_bearer_token = "local"  # use server.localToken, or the upstream key when apiKeySource=client
@@ -232,7 +260,7 @@ For Codex Desktop, keep the bridge running in the background. On macOS, install 
 
 ```bash
 llm-coding-bridge install-service
-curl http://127.0.0.1:18080/health
+curl http://127.0.0.1:37629/health
 ```
 
 Then back up `~/.codex/config.toml`, place the same provider block and top-level `model` / `model_provider` values in `~/.codex/config.toml`, and restart Codex Desktop. The `init` guide can do this after an explicit Desktop confirmation.
@@ -256,7 +284,7 @@ llm-coding-bridge template claude
 Use the local Anthropic-compatible endpoint:
 
 ```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:37629"
 export ANTHROPIC_AUTH_TOKEN="local"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
@@ -270,7 +298,7 @@ Persistent Claude Code settings can be written by `init`. If `~/.claude/settings
 For an isolated Claude Code check that does not read existing user settings:
 
 ```bash
-ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
+ANTHROPIC_BASE_URL="http://127.0.0.1:37629" \
 ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
@@ -332,6 +360,16 @@ llm-coding-bridge init
 
 配置默认写入 `~/.llm-coding-bridge/config.json`（可用 `--out` 覆盖）。所有命令默认读取该文件；当前目录存在 `llm-coding-bridge.config.json` 时优先使用，`--config` 优先级最高。
 
+### v0.5.0 端口迁移
+
+新生成的配置默认使用端口 `37629`。该端口仍可配置，项目不声明独占此端口。
+
+升级软件包不会改写已有配置。将现有安装从 `18080` 迁移到 `37629` 时：
+
+1. 在 bridge 配置中把 `server.port` 改为 `37629`。
+2. 将各客户端 Base URL 的端口同步改为 `37629`。
+3. 执行 `llm-coding-bridge restart-service`，再访问 `http://127.0.0.1:37629/health` 验证服务。
+
 `init` 会在 bridge 配置和检测之后询问是否配置 Claude Code、Codex CLI profile 和 Codex Desktop。默认不写客户端配置；确认写入前会先备份已有文件，备份后缀为 `.bak-YYYYMMDD-HHMMSS`。Codex Desktop 会改变默认 provider，需要单独确认。
 
 检测配置：
@@ -352,7 +390,7 @@ llm-coding-bridge serve
 Codex 的 `base_url` 配为：
 
 ```text
-http://127.0.0.1:18080/v1
+http://127.0.0.1:37629/v1
 ```
 
 Codex CLI 建议用独立 profile，避免影响默认配置：
@@ -376,7 +414,7 @@ Codex Desktop 使用前要保证 bridge 在后台运行。macOS 可安装 launch
 
 ```bash
 llm-coding-bridge install-service
-curl http://127.0.0.1:18080/health
+curl http://127.0.0.1:37629/health
 ```
 
 配置或包升级后重启服务：
@@ -398,7 +436,7 @@ llm-coding-bridge template codex-desktop
 Claude 类客户端配置：
 
 ```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:18080"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:37629"
 export ANTHROPIC_AUTH_TOKEN="local"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
@@ -408,7 +446,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="your-model"
 如果只想临时验证，不读取现有 `~/.claude/settings.json`：
 
 ```bash
-ANTHROPIC_BASE_URL="http://127.0.0.1:18080" \
+ANTHROPIC_BASE_URL="http://127.0.0.1:37629" \
 ANTHROPIC_AUTH_TOKEN="local" \
 claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
 ```
@@ -441,6 +479,24 @@ API Key 缓存：`apiKeyCommand` 结果默认缓存 10 分钟，用 `upstream.ap
 ```
 
 bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-upstream-api-key`、`Authorization: Bearer ...`、`x-api-key`。如果启用了 `server.localToken`，本地 token 放 `Authorization`，上游 key 放 `x-upstream-api-key`。
+
+### ZCode 与上游兼容
+
+部分 OpenAI-compatible 上游不接受客户端扩展字段，或在 `stream: false` 请求中仍使用 SSE 响应格式。bridge 为 ZCode 和其他 OpenAI-compatible 客户端提供这两类兼容处理。
+
+上游不接受 `chat_template_kwargs` 时，启用请求字段清理：
+
+```json
+{
+  "upstream": {
+    "stripChatTemplateKwargs": true
+  }
+}
+```
+
+启用后，bridge 仅移除请求顶层的 `chat_template_kwargs` 和 `extra_body.chat_template_kwargs`，其余字段保持不变。该清理同时适用于流式和非流式请求。
+
+对于 `stream: false` 请求，如果上游返回完整 SSE 序列，bridge 会将其聚合为标准 OpenAI `chat.completion` JSON 对象，以兼容 ZCode 的上下文压缩和摘要流程。响应归一化仅作用于非流式请求；流式响应正文仍原样透传。
 
 ## Security
 

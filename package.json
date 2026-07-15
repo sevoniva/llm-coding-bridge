@@ -1,6 +1,6 @@
 {
   "name": "@sevoniva/llm-coding-bridge",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Local bridge for using OpenAI-compatible chat completion providers with coding clients.",
   "license": "MIT",
   "type": "commonjs",
@@ -19,12 +19,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "lint": "node --check bin/llm-coding-bridge.js && node --check lib/*.js && node --check lib/converters/*.js && node --check test/client-setup.test.js && node --check test/smoke.js && node --check scripts/security-scan.js",
+    "lint": "node --check bin/llm-coding-bridge.js && node --check lib/*.js && node --check lib/converters/*.js && node --check test/chat-compat.test.js && node --check test/client-setup.test.js && node --check test/smoke.js && node --check scripts/security-scan.js",
     "security:scan": "node scripts/security-scan.js",
     "secretlint": "secretlint \"**/*\" --secretlintrc .secretlintrc.json --secretlintignore .secretlintignore",
     "repo:gate": "node scripts/repo-gate.js",
     "sca": "npm audit --audit-level=high --registry=https://registry.npmjs.org",
-    "test": "node test/client-setup.test.js && node test/smoke.js",
+    "test": "node test/chat-compat.test.js && node test/client-setup.test.js && node test/smoke.js",
     "pack:check": "npm pack --dry-run"
   },
   "engines": {
