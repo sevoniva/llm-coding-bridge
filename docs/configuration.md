@@ -49,12 +49,16 @@ Installing a new package version does not rewrite `~/.llm-coding-bridge/config.j
 3. Restart the service with `llm-coding-bridge restart-service`.
 4. Confirm that `http://127.0.0.1:37629/health` returns `{"ok":true}`.
 
+### Upgrading to v0.6.0
+
+Version `0.6.0` enforces the listener and file-permission boundaries described in this guide. Non-loopback listeners require `server.localToken`. POST API routes require `application/json` and reject non-loopback browser origins. Files written by `init` and client setup use mode `0600`, with `0700` for newly created private directories. When a client config path is a symbolic link, the link is preserved and its regular-file target is updated atomically. Existing files are not rewritten during package installation; review their permissions once with `chmod 600 <file>`.
+
 The command starts an interactive bilingual setup flow:
 
 ```text
 LLM Coding Bridge setup / LLM Coding Bridge 配置向导
-API keys are not written to config files. Use local for env/command, or client for provider switchers.
-配置文件不写入 API Key。local 表示从环境变量/命令读取，client 表示由客户端或切换工具传入。
+The bridge config does not store upstream API keys. Generated client configs may store a client-managed key with private file permissions.
+bridge 配置不保存上游 API Key。自动生成的客户端配置可能保存由客户端管理的 Key，并使用私有文件权限。
 
 Listen host / 本地监听地址 [127.0.0.1]: 127.0.0.1
 Listen port / 本地监听端口 [37629]: 37629
@@ -65,14 +69,14 @@ API key source (local/client) / API Key 来源（local/client）[local]: local
 API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
-Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
+Local auth token (required for non-loopback hosts) / 本地鉴权 token（非 loopback 必填）:
 Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 
 Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
 ```
 
-Client setup defaults to `No`. When enabled, `init` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`.
+Client setup defaults to `No`. When enabled, `init` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`. In client-key mode, generated client configuration can contain the real upstream key as a bearer token. Generated secret-bearing files and backups use mode `0600`.
 
 Prompt reference:
 
@@ -87,7 +91,7 @@ Prompt reference:
 | `API key environment variable` | Shown when source is `local`. Environment variable used to read the upstream API key. | `LLM_API_KEY` |
 | `API key command` | Shown when source is `local`. Optional command that prints the upstream API key. Recommended for background services. | Keychain or secret-manager command |
 | `Temperature` | Sampling temperature sent to the upstream provider. | `0` for coding workflows |
-| `Local auth token` | Optional bearer/x-api-key token clients must present. Leave blank to disable. Strongly recommended when binding to a non-loopback address. | Random secret, or blank |
+| `Local auth token` | Bearer/x-api-key token clients must present. Optional on loopback and required on non-loopback listeners. | Random secret for non-loopback; optional on loopback |
 | `Configure local clients now?` | Optional client setup for Claude Code, Codex CLI, and Codex Desktop. Defaults to no writes. | `N`, then configure clients only when ready |
 
 Generated config:
@@ -235,7 +239,7 @@ By default the bridge listens on `127.0.0.1` and does not require auth. To requi
 }
 ```
 
-Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time. When `localToken` is set, update the Codex profile's `experimental_bearer_token` and Claude's `ANTHROPIC_AUTH_TOKEN` to the same value. Strongly recommended when binding to a non-loopback address.
+Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time. When `localToken` is set, update the Codex profile's `experimental_bearer_token` and Claude's `ANTHROPIC_AUTH_TOKEN` to the same value. The bridge rejects a non-loopback host when `localToken` is missing.
 
 ## 3b. Multiple Upstreams
 
@@ -262,6 +266,24 @@ Request bodies are capped at 10 MB by default. Override with `server.maxBodyByte
   "server": { "host": "127.0.0.1", "port": 37629, "maxBodyBytes": 20971520 }
 }
 ```
+
+Upstream limits apply independently:
+
+- `upstream.timeoutMs`: complete response deadline, default `600000` ms
+- `upstream.maxResponseBytes`: cumulative response limit, default `33554432` bytes
+- `upstream.maxSseEventBytes`: one parsed SSE event, default `1048576` bytes
+
+```json
+{
+  "upstream": {
+    "timeoutMs": 600000,
+    "maxResponseBytes": 33554432,
+    "maxSseEventBytes": 1048576
+  }
+}
+```
+
+Values must be positive integers. The cumulative response limit covers JSON, raw streaming, and parsed SSE paths. Streaming waits for downstream drain signals for up to 30 seconds per write and accepts LF or CRLF event boundaries.
 
 ## 3d. ZCode and Provider Compatibility
 
@@ -682,12 +704,16 @@ llm-coding-bridge init
 3. 执行 `llm-coding-bridge restart-service` 重启服务。
 4. 确认 `http://127.0.0.1:37629/health` 返回 `{"ok":true}`。
 
+### 升级到 v0.6.0
+
+`0.6.0` 强制执行本文说明的监听与文件权限边界。非 loopback 监听必须配置 `server.localToken`。POST API 只接受 `application/json`，并拒绝非 loopback 的浏览器 Origin。`init` 和客户端配置命令写入的文件使用 `0600`，新建私有目录使用 `0700`。客户端配置路径为符号链接时，bridge 会保留链接并原子更新其指向的普通文件。安装软件包不会改写已有文件；已有安装应执行一次 `chmod 600 <file>` 检查。
+
 命令会启动中英文交互式配置流程：
 
 ```text
 LLM Coding Bridge setup / LLM Coding Bridge 配置向导
-API keys are not written to config files. Use local for env/command, or client for provider switchers.
-配置文件不写入 API Key。local 表示从环境变量/命令读取，client 表示由客户端或切换工具传入。
+The bridge config does not store upstream API keys. Generated client configs may store a client-managed key with private file permissions.
+bridge 配置不保存上游 API Key。自动生成的客户端配置可能保存由客户端管理的 Key，并使用私有文件权限。
 
 Listen host / 本地监听地址 [127.0.0.1]: 127.0.0.1
 Listen port / 本地监听端口 [37629]: 37629
@@ -698,14 +724,14 @@ API key source (local/client) / API Key 来源（local/client）[local]: local
 API key environment variable / API Key 环境变量 [LLM_API_KEY]: LLM_API_KEY
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]: 0
-Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
+Local auth token (required for non-loopback hosts) / 本地鉴权 token（非 loopback 必填）:
 Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 
 Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
 ```
 
-客户端配置默认不写入。确认后，`init` 可以合并 Claude Code 配置、生成 Codex CLI 独立 profile，或在单独确认后配置 Codex Desktop。已有文件会先创建 `.bak-YYYYMMDD-HHMMSS` 备份。
+客户端配置默认不写入。确认后，`init` 可以合并 Claude Code 配置、生成 Codex CLI 独立 profile，或在单独确认后配置 Codex Desktop。已有文件会先创建 `.bak-YYYYMMDD-HHMMSS` 备份。client key 模式下，生成的客户端配置可能把真实上游 Key 保存为 bearer token。包含凭据的配置和备份固定使用 `0600` 权限。
 
 字段说明：
 
@@ -720,7 +746,7 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 | `API key environment variable` | source 为 `local` 时出现。读取上游 API Key 的环境变量名。 | `LLM_API_KEY` |
 | `API key command` | source 为 `local` 时出现。可选，输出上游 API Key 的命令，适合后台服务和开机自启。 | Keychain 或密钥管理命令 |
 | `Temperature` | 发送给上游服务的采样温度。 | 编码场景建议 `0` |
-| `Local auth token` | 可选。客户端必须携带的 bearer/x-api-key token，留空则不启用。绑非 loopback 时强烈建议配置。 | 随机密钥，或留空 |
+| `Local auth token` | 客户端必须携带的 bearer/x-api-key token。loopback 可选，非 loopback 监听时必填。 | 非 loopback 使用随机密钥；loopback 可留空 |
 | `Configure local clients now?` | 可选配置 Claude Code、Codex CLI 和 Codex Desktop。默认不写文件。 | `N`，需要时再确认配置 |
 
 生成配置示例：
@@ -742,7 +768,7 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 }
 ```
 
-配置文件不保存 API Key。
+bridge 配置不保存上游 API Key；client key 模式下生成的客户端配置可能保存该 Key。
 
 当 `API key source` 选择 `client` 时，生成的上游配置使用 `apiKeySource`，不会包含 `apiKeyEnv` 或 `apiKeyCommand`：
 
@@ -866,7 +892,7 @@ LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
 }
 ```
 
-客户端须带 `Authorization: Bearer your-secret` 或 `x-api-key: your-secret`。`/health` 不鉴权。比较为常量时间。配置 localToken 后，Codex profile 的 `experimental_bearer_token` 和 Claude 的 `ANTHROPIC_AUTH_TOKEN` 要改成同一个值。绑非 loopback 时强烈建议启用。
+客户端须带 `Authorization: Bearer your-secret` 或 `x-api-key: your-secret`。`/health` 不鉴权。比较为常量时间。配置 localToken 后，Codex profile 的 `experimental_bearer_token` 和 Claude 的 `ANTHROPIC_AUTH_TOKEN` 要改成同一个值。非 loopback 地址未配置 `localToken` 时，bridge 拒绝启动。
 
 ## 3b. 多上游
 
@@ -893,6 +919,24 @@ LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
   "server": { "host": "127.0.0.1", "port": 37629, "maxBodyBytes": 20971520 }
 }
 ```
+
+上游限制单独配置：
+
+- `upstream.timeoutMs`：完整响应超时，默认 `600000` 毫秒
+- `upstream.maxResponseBytes`：响应累计上限，默认 `33554432` 字节
+- `upstream.maxSseEventBytes`：单个解析后 SSE 事件上限，默认 `1048576` 字节
+
+```json
+{
+  "upstream": {
+    "timeoutMs": 600000,
+    "maxResponseBytes": 33554432,
+    "maxSseEventBytes": 1048576
+  }
+}
+```
+
+三项都必须是正整数。响应累计限制覆盖 JSON、原始流式和 SSE 解析路径。流式转发单次等待下游 drain 的上限为 30 秒，并同时支持 LF 和 CRLF 事件边界。
 
 ## 3d. ZCode 与上游兼容
 

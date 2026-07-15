@@ -43,6 +43,18 @@ Package upgrades do not rewrite existing configuration files. To move an existin
 2. Update each client Base URL to use port `37629`.
 3. Run `llm-coding-bridge restart-service`, then verify `http://127.0.0.1:37629/health`.
 
+### Security boundaries in v0.6.0
+
+- A non-loopback `server.host` now requires `server.localToken`; unsafe configurations are rejected before the service starts.
+- Configs, client profiles, and their backups written by the CLI use mode `0600`. Newly created private config directories use mode `0700`.
+- Existing symbolic links used for client configuration are preserved; the resolved regular-file target is updated atomically and restricted to mode `0600`.
+- The upstream deadline covers the complete response body. Responses are capped at 32 MiB and individual SSE events at 1 MiB by default.
+- Streaming honors downstream backpressure, limits each drain wait to 30 seconds, and accepts both LF and CRLF SSE framing.
+- POST API routes require `application/json` and reject browser requests from non-loopback origins. CLI and desktop clients that do not send an `Origin` header remain compatible.
+- GitHub Actions used by CI and package publication are pinned to verified commit SHAs.
+
+Package upgrades do not rewrite existing local files. For an existing installation, review secret-bearing files once with `chmod 600 <file>`.
+
 The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, temperature, and optional client setup:
 
 ```text
@@ -55,13 +67,15 @@ API key source (local/client) / API Key 来源（local/client）[local]:
 API key environment variable / API Key 环境变量 [LLM_API_KEY]:
 API key command (optional) / API Key 读取命令（可选）:
 Temperature / 采样温度 [0]:
-Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）:
+Local auth token (required for non-loopback hosts) / 本地鉴权 token（非 loopback 必填）:
 Configure local clients now? / 是否现在配置本地客户端？[y/N]:
 ```
 
 Use `local` when the bridge reads the upstream key from an environment variable or command. Use `client` when a local provider switcher manages the key and sends it with each request.
 
 Client setup defaults to `No`. When enabled, the guide can update Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`.
+
+The bridge config does not store an upstream API key. In client-key mode, generated Claude or Codex client configuration may store that key as the client bearer token; generated files and backups use mode `0600`.
 
 For complete setup instructions, see [Configuration Guide](docs/configuration.md).
 
@@ -83,7 +97,7 @@ The generated file looks like this:
 }
 ```
 
-API keys are not stored in the config file:
+Upstream API keys are not stored in the bridge config:
 
 ```bash
 export LLM_API_KEY="..."
@@ -121,7 +135,7 @@ A request with `model: "gpt-4o"` routes to OpenAI; `model: "other-model"` routes
 
 ## Local auth
 
-By default the bridge listens on `127.0.0.1` and does not require auth. To require a token (strongly recommended when binding to a non-loopback address), set `server.localToken`:
+By default the bridge listens on `127.0.0.1` and does not require auth. Set `server.localToken` to require a token. A non-loopback host is rejected unless this value is configured:
 
 ```json
 {
@@ -130,6 +144,22 @@ By default the bridge listens on `127.0.0.1` and does not require auth. To requi
 ```
 
 Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time.
+
+## Upstream response limits
+
+`upstream.timeoutMs` applies to the complete upstream response, including streaming bodies. The default is 10 minutes. `upstream.maxResponseBytes` defaults to 32 MiB, and `upstream.maxSseEventBytes` defaults to 1 MiB:
+
+```json
+{
+  "upstream": {
+    "timeoutMs": 600000,
+    "maxResponseBytes": 33554432,
+    "maxSseEventBytes": 1048576
+  }
+}
+```
+
+All three values must be positive integers. The response limit is cumulative across JSON, raw streaming, and parsed SSE modes.
 
 ## API key caching
 
@@ -370,7 +400,21 @@ llm-coding-bridge init
 2. 将各客户端 Base URL 的端口同步改为 `37629`。
 3. 执行 `llm-coding-bridge restart-service`，再访问 `http://127.0.0.1:37629/health` 验证服务。
 
+### v0.6.0 安全边界
+
+- `server.host` 使用非 loopback 地址时必须配置 `server.localToken`，否则服务拒绝启动。
+- CLI 写入的配置、客户端 profile 及备份固定为 `0600`；新建的私有配置目录为 `0700`。
+- 如果客户端配置使用符号链接，bridge 会保留链接，原子更新其指向的普通文件，并将目标文件权限收紧为 `0600`。
+- 上游超时覆盖完整响应正文。响应总量默认上限 32 MiB，单个 SSE 事件默认上限 1 MiB。
+- 流式转发遵循下游背压，单次 drain 等待上限为 30 秒，并同时支持 LF 与 CRLF SSE 分帧。
+- POST API 只接受 `application/json`，并拒绝来自非 loopback Origin 的浏览器请求；不发送 `Origin` 的 CLI 和桌面客户端保持兼容。
+- CI 和 npm 发布工作流使用已验证的完整 commit SHA。
+
+升级软件包不会改写已有本地文件。已有安装应对包含凭据的文件执行一次 `chmod 600 <file>` 检查。
+
 `init` 会在 bridge 配置和检测之后询问是否配置 Claude Code、Codex CLI profile 和 Codex Desktop。默认不写客户端配置；确认写入前会先备份已有文件，备份后缀为 `.bak-YYYYMMDD-HHMMSS`。Codex Desktop 会改变默认 provider，需要单独确认。
+
+bridge 配置不保存上游 API Key。在 client key 模式下，自动生成的 Claude 或 Codex 客户端配置可能把真实上游 Key 保存为客户端 bearer token；生成文件和备份使用 `0600` 权限。
 
 检测配置：
 
@@ -461,7 +505,9 @@ llm-coding-bridge logs --lines 80
 
 多上游路由：用 `upstreams` 数组替代 `upstream`，按客户端请求的 `model` 字段路由到不同上游。多上游时未知 model 返回 404，不静默回退；单上游时客户端 model 字段被改写为配置值（向后兼容）。详见上方 "Multiple upstreams"。
 
-本地鉴权：配置 `server.localToken` 后，请求须带 `Authorization: Bearer <token>` 或 `x-api-key: <token>`，绑非 loopback 时强烈建议启用。
+本地鉴权：配置 `server.localToken` 后，请求须带 `Authorization: Bearer <token>` 或 `x-api-key: <token>`。使用非 loopback 监听地址时该配置为必填项。
+
+上游响应限制：`upstream.timeoutMs` 默认 10 分钟并覆盖完整响应正文；`upstream.maxResponseBytes` 默认 32 MiB；`upstream.maxSseEventBytes` 默认 1 MiB。三项都必须是正整数。
 
 API Key 缓存：`apiKeyCommand` 结果默认缓存 10 分钟，用 `upstream.apiKeyCacheTtlMs` 覆盖，设 `0` 禁用。上游返回 401 时缓存立即失效，下次请求重新解析，轮换的 key 无需重启即可恢复。
 
@@ -505,8 +551,10 @@ bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-up
 - Use `apiKeyCommand` for background services. Prefer the object form `{ "command": "/usr/bin/security", "args": [...] }` over the string form; the string form runs through `/bin/sh -lc` and is only for convenience.
 - Use `apiKeySource: "client"` when a local provider switcher owns the upstream key.
 - API key command results are cached in-process (default 10 min, override with `apiKeyCacheTtlMs`; set `0` to disable). The cache is busted automatically on an upstream 401.
-- Set `server.localToken` to require a bearer/x-api-key on every request. Strongly recommended when binding to a non-loopback address.
+- Set `server.localToken` to require a bearer/x-api-key on every request. It is mandatory for non-loopback listeners.
 - Request bodies are capped at 10 MB by default (`server.maxBodyBytes`).
+- Upstream bodies have a complete-response deadline and cumulative size limit. Parsed SSE events have an independent size limit.
+- CLI-generated secret-bearing files and backups use mode `0600`.
 - Do not commit private config files.
 
 ### Why this package runs shell commands
