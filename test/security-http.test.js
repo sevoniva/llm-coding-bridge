@@ -537,7 +537,7 @@ async function main() {
   console.log("security HTTP tests passed");
 }
 
-main().catch((error) => {
-  console.error(error);
+main().catch(() => {
+  console.error("security HTTP tests failed");
   process.exitCode = 1;
 });
