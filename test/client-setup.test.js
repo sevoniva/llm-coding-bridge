@@ -16,7 +16,7 @@ function tmpHome(name) {
 function testConfig(localToken) {
   return {
     path: "/tmp/bridge.config.json",
-    server: { host: "127.0.0.1", port: 18080, ...(localToken ? { localToken } : {}) },
+    server: { host: "127.0.0.1", port: 37629, ...(localToken ? { localToken } : {}) },
     upstreams: [{ name: "Example", baseUrl: "https://api.example.com/v1", model: "example-model", apiKeyEnv: "EXAMPLE_API_KEY" }],
     defaultUpstream: { name: "Example", baseUrl: "https://api.example.com/v1", model: "example-model", apiKeyEnv: "EXAMPLE_API_KEY" },
   };
@@ -49,7 +49,7 @@ async function main() {
   const mergedClaude = JSON.parse(fs.readFileSync(claudeSettings, "utf8"));
   assert.equal(mergedClaude.theme, "dark");
   assert.equal(mergedClaude.env.KEEP, "yes");
-  assert.equal(mergedClaude.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:18080");
+  assert.equal(mergedClaude.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:37629");
   assert.equal(mergedClaude.env.ANTHROPIC_AUTH_TOKEN, "client-token");
   assert.equal(mergedClaude.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "example-model");
   assert.equal(mergedClaude.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "example-model");
@@ -88,7 +88,7 @@ async function main() {
   const initPath = path.join(cliHome, "config.json");
   const init = await runCli(cli, ["init", "--out", initPath, "--home", cliHome, "--no-doctor"], [
     "127.0.0.1",
-    "18080",
+    "37629",
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
@@ -110,7 +110,7 @@ async function main() {
   const clientKeyInitPath = path.join(clientKeyHome, "config.json");
   const clientKeyInit = await runCli(cli, ["init", "--out", clientKeyInitPath, "--home", clientKeyHome, "--no-doctor"], [
     "127.0.0.1",
-    "18080",
+    "37629",
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
@@ -132,7 +132,7 @@ async function main() {
   const guardedInitPath = path.join(guardedHome, "config.json");
   const guarded = await runCli(cli, ["init", "--out", guardedInitPath, "--home", guardedHome, "--no-doctor"], [
     "127.0.0.1",
-    "18080",
+    "37629",
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
@@ -154,7 +154,7 @@ async function main() {
   const codexInitPath = path.join(codexHome, "config.json");
   const codexInit = await runCli(cli, ["init", "--out", codexInitPath, "--home", codexHome, "--no-doctor"], [
     "127.0.0.1",
-    "18080",
+    "37629",
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",

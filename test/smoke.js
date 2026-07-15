@@ -7,6 +7,8 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
+const { loadConfig } = require("../lib/config");
+
 let bridgeProcess = null;
 let upstreamServer = null;
 
@@ -70,7 +72,7 @@ function spawnBridge(cli, configPath, env = {}) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
       const m = stderr.match(/listening on http:\/\/[\d.]+:(\d+)\/v1/);
-      if (m) resolve({ child, port: Number(m[1]) });
+      if (m) resolve({ child, port: Number(m[1]), stderr: () => stderr });
     });
     child.on("close", () => reject(new Error(`bridge exited before listening: ${stderr}`)));
     setTimeout(() => reject(new Error("bridge listen timeout")), 10000);
@@ -96,8 +98,19 @@ function sse(res, body) {
 
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "llm-coding-bridge-"));
+  const defaultPortConfigPath = path.join(tmp, "default-port.json");
+  fs.writeFileSync(defaultPortConfigPath, JSON.stringify({
+    upstream: {
+      name: "default-port-upstream",
+      baseUrl: "https://api.example.com/v1",
+      model: "example-model",
+      apiKeyEnv: "EXAMPLE_API_KEY",
+    },
+  }));
+  assert.equal(loadConfig(defaultPortConfigPath).server.port, 37629);
   let upstreamRequests = 0;
   let upstreamStreamClosed = false;
+  let lastCompatPayload = null;
   const upstream = http.createServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
       res.writeHead(404).end();
@@ -120,6 +133,38 @@ async function main() {
       if (prompt.includes("upstream fail")) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "authorization=secret-token" }));
+        return;
+      }
+      if (!payload.stream && prompt.includes("compat malformed SSE")) {
+        lastCompatPayload = payload;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        sse(res, {
+          id: "chatcmpl-compat",
+          object: "chat.completion.chunk",
+          model: payload.model,
+          choices: [{ index: 0, delta: { role: "assistant", reasoning_content: "compat reasoning" } }],
+        });
+        sse(res, {
+          id: "chatcmpl-compat",
+          object: "chat.completion.chunk",
+          model: payload.model,
+          choices: [{ index: 0, delta: { content: "compat " } }],
+        });
+        sse(res, {
+          id: "chatcmpl-compat",
+          object: "chat.completion.chunk",
+          model: payload.model,
+          choices: [{ index: 0, delta: { content: "normalized" } }],
+        });
+        sse(res, {
+          id: "chatcmpl-compat",
+          object: "chat.completion.chunk",
+          model: payload.model,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
+        });
+        res.write("data: [DONE]\n\n");
+        res.end();
         return;
       }
       const tool = (payload.tools || []).map((item) => item.function).find((item) => item?.name === "bridge_probe" || item?.name === "bridge_freeform" || item?.name === "tool_search");
@@ -175,12 +220,13 @@ async function main() {
       name: "fake-upstream",
       baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
       model: "fake-model",
-      apiKeyEnv: "FAKE_API_KEY"
+      apiKeyEnv: "FAKE_API_KEY",
+      stripChatTemplateKwargs: true
     }
   }, null, 2));
 
   const cli = path.join(__dirname, "..", "bin", "llm-coding-bridge.js");
-  const { child: bridge } = await spawnBridge(cli, configPath, { FAKE_API_KEY: "upstream-key" });
+  const { child: bridge, stderr: bridgeStderr } = await spawnBridge(cli, configPath, { FAKE_API_KEY: "upstream-key" });
   bridgeProcess = bridge;
 
   const chat = await requestJson(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
@@ -189,6 +235,35 @@ async function main() {
     stream: false,
   });
   assert.equal(chat.choices[0].message.content, "echo:hello");
+
+  const compatChatRaw = await requestRaw(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
+    model: "client-model",
+    messages: [{ role: "user", content: "compat malformed SSE direct chat" }],
+    stream: false,
+    chat_template_kwargs: { enable_thinking: false },
+    extra_body: {
+      chat_template_kwargs: { enable_thinking: true },
+      vendor_option: "preserved",
+    },
+  });
+  assert.deepEqual({
+    status: compatChatRaw.status,
+    model: lastCompatPayload?.model,
+    hasTopLevelChatTemplateKwargs: Object.hasOwn(lastCompatPayload || {}, "chat_template_kwargs"),
+    hasNestedChatTemplateKwargs: Object.hasOwn(lastCompatPayload?.extra_body || {}, "chat_template_kwargs"),
+    vendorOption: lastCompatPayload?.extra_body?.vendor_option,
+  }, {
+    status: 200,
+    model: "fake-model",
+    hasTopLevelChatTemplateKwargs: false,
+    hasNestedChatTemplateKwargs: false,
+    vendorOption: "preserved",
+  });
+  const compatChat = JSON.parse(compatChatRaw.text);
+  assert.equal(compatChat.object, "chat.completion");
+  assert.equal(compatChat.choices[0].message.reasoning_content, "compat reasoning");
+  assert.equal(compatChat.choices[0].message.content, "compat normalized");
+  assert.deepEqual(compatChat.usage, { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 });
 
   const upstreamError = await requestRaw(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
     model: "client-model",
@@ -206,6 +281,8 @@ async function main() {
   });
   assert.match(stream, /data:/);
   assert.match(stream, /echo:stream/);
+  assert.match(stream, /"object":"chat\.completion\.chunk"/);
+  assert.match(stream, /data: \[DONE\]/);
 
   const responses = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses`, {
     model: "client-model",
@@ -214,6 +291,23 @@ async function main() {
   });
   assert.equal(responses.output_text, "echo:hello responses");
   assert.equal(responses.output[0].content[0].text, "echo:hello responses");
+
+  const compatResponses = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+    model: "client-model",
+    input: "compat malformed SSE responses",
+    stream: false,
+  });
+  assert.equal(lastCompatPayload.stream, false);
+  assert.equal(Object.hasOwn(lastCompatPayload, "stream_options"), false);
+  assert.equal(compatResponses.output_text, "compat normalized");
+  assert.equal(compatResponses.output[0].content[0].text, "compat normalized");
+  assert.deepEqual(compatResponses.usage, {
+    input_tokens: 11,
+    output_tokens: 4,
+    total_tokens: 15,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: 0 },
+  });
 
   const compact = await requestJson(`http://127.0.0.1:${bridgePort}/v1/responses/compact`, {
     model: "client-model",
@@ -291,6 +385,16 @@ async function main() {
   }, { "anthropic-version": "2023-06-01", "x-api-key": "local" });
   assert.equal(claude.content[0].text, "echo:hello claude");
 
+  const compatClaude = await requestJson(`http://127.0.0.1:${bridgePort}/v1/messages`, {
+    model: "client-model",
+    max_tokens: 64,
+    messages: [{ role: "user", content: "compat malformed SSE claude" }],
+    stream: false,
+  }, { "anthropic-version": "2023-06-01", "x-api-key": "local" });
+  assert.equal(lastCompatPayload.stream, false);
+  assert.equal(compatClaude.content[0].text, "compat normalized");
+  assert.deepEqual(compatClaude.usage, { input_tokens: 11, output_tokens: 4 });
+
   const claudeStream = await requestText(`http://127.0.0.1:${bridgePort}/v1/messages`, {
     model: "client-model",
     max_tokens: 64,
@@ -299,6 +403,27 @@ async function main() {
   }, { "anthropic-version": "2023-06-01", "x-api-key": "local" });
   assert.match(claudeStream, /content_block_delta/);
   assert.match(claudeStream, /echo:stream claude/);
+
+  const compatClaudeStream = await requestText(`http://127.0.0.1:${bridgePort}/v1/messages`, {
+    model: "client-model",
+    max_tokens: 64,
+    messages: [{ role: "user", content: "compat malformed SSE claude stream" }],
+    stream: true,
+  }, { "anthropic-version": "2023-06-01", "x-api-key": "local" });
+  assert.equal(lastCompatPayload.stream, false);
+  assert.match(compatClaudeStream, /content_block_delta/);
+  assert.match(compatClaudeStream, /compat normalized/);
+  assert.match(compatClaudeStream, /message_stop/);
+
+  await wait(20);
+  const compatibilityLogs = bridgeStderr()
+    .split(/\r?\n/)
+    .filter((line) => line.includes("[compat] normalized non-stream SSE response"));
+  assert.equal(compatibilityLogs.length, 4);
+  for (const line of compatibilityLogs) {
+    assert.match(line, /^\[compat\] normalized non-stream SSE response status=200 content-type=application\/json$/);
+  }
+  assert.doesNotMatch(compatibilityLogs.join("\n"), /compat reasoning|compat normalized|secret-token/);
 
   const doctor = spawn(process.execPath, [cli, "doctor", "--config", configPath], {
     env: { ...process.env, FAKE_API_KEY: "upstream-key" },
@@ -426,7 +551,7 @@ async function main() {
   const init = spawn(process.execPath, [cli, "init", "--out", initPath, "--no-doctor"], { stdio: ["pipe", "pipe", "pipe"] });
   init.stdin.end([
     "127.0.0.1",
-    "18080",
+    "",
     "Example Provider",
     "https://api.example.com/v1",
     "example-model",
@@ -441,7 +566,7 @@ async function main() {
   const initCode = await new Promise((resolve) => init.on("close", resolve));
   assert.equal(initCode, 0, initErr);
   const initConfig = JSON.parse(fs.readFileSync(initPath, "utf8"));
-  assert.equal(initConfig.server.port, 18080);
+  assert.equal(initConfig.server.port, 37629);
   assert.equal(initConfig.upstream.name, "Example Provider");
   assert.equal(initConfig.upstream.apiKeyEnv, "EXAMPLE_API_KEY");
 
