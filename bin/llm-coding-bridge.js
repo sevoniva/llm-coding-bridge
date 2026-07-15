@@ -6,11 +6,12 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 
-const { loadConfig } = require("../lib/config");
+const { loadConfig, isLoopbackHost } = require("../lib/config");
 const { startServer } = require("../lib/server");
 const { doctor, status } = require("../lib/doctor");
 const { createCodexProfile } = require("../lib/codex-profile");
 const { configureClaudeCode, configureCodexDesktop, manualClaude, manualCodexCli, manualCodexDesktop, manualSetup } = require("../lib/client-setup");
+const { writePrivateFile } = require("../lib/file-safety");
 const { installService, restartService, uninstallService } = require("../lib/service");
 
 const CWD_CONFIG = "llm-coding-bridge.config.json";
@@ -76,6 +77,8 @@ function publicErrorMessage(error) {
       return "Missing upstream.model.";
     case "upstream.apiKeySource must be \"client\" when set.":
       return "upstream.apiKeySource must be \"client\" when set.";
+    case "server.localToken is required when server.host is not a loopback address.":
+      return "server.localToken is required when server.host is not a loopback address.";
     case "Missing upstream.apiKeyEnv, upstream.apiKeyCommand, or upstream.apiKeySource.":
       return "Missing upstream.apiKeyEnv, upstream.apiKeyCommand, or upstream.apiKeySource.";
     case "Missing client API key.":
@@ -92,6 +95,7 @@ function publicErrorMessage(error) {
   if (message.startsWith("Config file not found:")) return "Config file not found. Run \"llm-coding-bridge init\" to create one.";
   if (message.startsWith("Config file is not valid JSON:")) return "Config file is not valid JSON.";
   if (message.startsWith("apiKeyCommand exited with")) return "apiKeyCommand exited with a non-zero status.";
+  if (/^upstream\.(timeoutMs|maxResponseBytes|maxSseEventBytes) must be a positive integer\.$/.test(message)) return message;
   if (message.includes("already exists")) return "Target file already exists. Re-run with --force to overwrite.";
   if (message.endsWith(" is required.")) return "A required value is missing.";
   if (message.includes(" must be a number")) return "A numeric value is invalid.";
@@ -208,8 +212,8 @@ async function initConfig(out, runDoctor, home) {
   const prompt = createPrompt();
   try {
     console.log("LLM Coding Bridge setup / LLM Coding Bridge 配置向导");
-    console.log("API keys are not written to config files. Use local for env/command, or client for provider switchers.");
-    console.log("配置文件不写入 API Key。local 表示从环境变量/命令读取，client 表示由客户端或切换工具传入。\n");
+    console.log("The bridge config does not store upstream API keys. Generated client configs may store a client-managed key with private file permissions.");
+    console.log("bridge 配置不保存上游 API Key。自动生成的客户端配置可能保存由客户端管理的 Key，并使用私有文件权限。\n");
     const host = valueOrDefault(await prompt.ask("Listen host / 本地监听地址 [127.0.0.1]: "), "127.0.0.1");
     const port = await askNumber(prompt, "Listen port / 本地监听端口 [37629]: ", "37629", "Listen port");
     const name = valueOrDefault(await prompt.ask("Provider name / 上游服务名称 [Custom Provider]: "), "Custom Provider");
@@ -219,7 +223,10 @@ async function initConfig(out, runDoctor, home) {
     const apiKeyEnv = keySource === "local" ? valueOrDefault(await prompt.ask("API key environment variable / API Key 环境变量 [LLM_API_KEY]: "), "LLM_API_KEY") : "";
     const apiKeyCommand = keySource === "local" ? valueOrDefault(await prompt.ask("API key command (optional) / API Key 读取命令（可选）: "), "") : "";
     const temperature = await askNumber(prompt, "Temperature / 采样温度 [0]: ", "0", "Temperature");
-    const localToken = valueOrDefault(await prompt.ask("Local auth token (optional, blank to disable) / 本地鉴权 token（可选，留空不启用）: "), "");
+    const localToken = valueOrDefault(await prompt.ask("Local auth token (required for non-loopback hosts) / 本地鉴权 token（非 loopback 必填）: "), "");
+    if (!isLoopbackHost(host) && !localToken) {
+      throw new Error("server.localToken is required when server.host is not a loopback address.");
+    }
 
     const config = {
       server: { host, port, ...(localToken ? { localToken } : {}) },
@@ -230,8 +237,7 @@ async function initConfig(out, runDoctor, home) {
     if (apiKeyCommand) config.upstream.apiKeyCommand = apiKeyCommand;
 
     const file = path.resolve(out);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+    writePrivateFile(file, `${JSON.stringify(config, null, 2)}\n`);
     console.log(`\nWrote config: ${file}`);
     console.log(`配置已写入：${file}`);
     if (keySource === "client") {
