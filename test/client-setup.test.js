@@ -118,11 +118,12 @@ async function main() {
     "0",
     "",
     "",
-  ].join("\n"));
+  ].join("\n"), { LLM_CODING_BRIDGE_CLIENT_API_KEY: "do-not-print-client-key" });
   assert.equal(clientKeyInit.code, 0, clientKeyInit.stderr || clientKeyInit.stdout);
   assert.match(clientKeyInit.stdout, /Client requests must include the upstream API key/);
   assert.match(clientKeyInit.stdout, /ANTHROPIC_AUTH_TOKEN=<upstream-api-key>/);
   assert.doesNotMatch(clientKeyInit.stdout, /ANTHROPIC_AUTH_TOKEN=local/);
+  assert.doesNotMatch(clientKeyInit.stdout + clientKeyInit.stderr, /do-not-print-client-key/);
   const clientKeyConfig = JSON.parse(fs.readFileSync(clientKeyInitPath, "utf8"));
   assert.equal(clientKeyConfig.upstream.apiKeySource, "client");
   assert.equal("apiKeyEnv" in clientKeyConfig.upstream, false);
