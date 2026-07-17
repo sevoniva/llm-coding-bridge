@@ -267,6 +267,28 @@ Request bodies are capped at 10 MB by default. Override with `server.maxBodyByte
 }
 ```
 
+## 3c-2. Server Timeouts and Heartbeat
+
+The bridge sets Node's HTTP server timeouts explicitly so that long-running streams are not cut by Node's defaults. All values are in milliseconds; `0` disables a timeout.
+
+- `server.timeoutMs` (default `0`, disabled): socket inactivity timeout during a response. Left disabled on purpose — the upstream timeout (in `lib/upstream.js`) bounds the actual upstream wait; setting this short would terminate legitimate long streams.
+- `server.requestTimeoutMs` (default `0`, disabled): time to receive the full request (headers + body). Disabled because large context uploads can legitimately exceed Node's 5-minute default.
+- `server.headersTimeoutMs` (default `65000`): time to receive request headers. Must be greater than `keepAliveTimeoutMs` or Node logs a warning.
+- `server.keepAliveTimeoutMs` (default `5000`): idle keep-alive window between sequential requests on one connection.
+- `server.heartbeatIntervalMs` (default `15000`): how often the bridge emits an SSE `: ping` comment frame to keep a streaming client alive while the upstream is silent before its first byte. `0` disables it. See "Streaming keepalive" under ZCode compatibility above.
+
+```json
+{
+  "server": {
+    "timeoutMs": 0,
+    "requestTimeoutMs": 0,
+    "headersTimeoutMs": 65000,
+    "keepAliveTimeoutMs": 5000,
+    "heartbeatIntervalMs": 15000
+  }
+}
+```
+
 Upstream limits apply independently:
 
 - `upstream.timeoutMs`: complete response deadline, default `600000` ms
@@ -307,6 +329,24 @@ When enabled, the bridge removes only these fields before forwarding the request
 Other top-level fields and other `extra_body` fields are preserved.
 
 For `stream: false` requests, the bridge expects one JSON response. If the upstream returns a complete SSE sequence instead, the bridge aggregates the chunks into a standard OpenAI `chat.completion` object. Response normalization is automatic and limited to non-streaming requests. Streaming response bodies pass through unchanged, while request cleanup applies to both modes when enabled.
+
+### Streaming keepalive (ZCode subagent cancellation)
+
+ZCode subagents cancel a request that stays silent for more than a few seconds while the upstream "thinks" before its first byte — reported as `Agent was cancelled before the subagent returned findings or background launch completed`. ZCode exposes no client-side idle/stream timeout, so the bridge keeps the connection alive itself.
+
+For every `stream: true` request, the bridge commits the SSE response headers immediately, then emits an SSE comment frame (`: ping\n\n`, ignored by all SSE parsers, including the bridge's own `eachSseData`) every `server.heartbeatIntervalMs` milliseconds until the upstream's first real byte arrives. The heartbeat stops on the first upstream byte (or on upstream error, client disconnect, or shutdown). This applies to the Chat Completions, Responses, and Anthropic streaming paths.
+
+```json
+{
+  "server": {
+    "heartbeatIntervalMs": 15000
+  }
+}
+```
+
+Set `heartbeatIntervalMs` to `0` to disable the heartbeat entirely.
+
+On the Chat Completions path, committing headers before the upstream responds has one observable consequence: if the upstream returns a non-SSE body (e.g. `application/json`) or no body at all (e.g. `204 No Content`) to a `stream: true` request, the bridge reports it as an in-stream SSE error frame followed by `data: [DONE]` rather than an HTTP 4xx/5xx, because the response is already committed to `text/event-stream`. Clients that are already parsing SSE see a clean protocol-level failure; the bridge remains healthy and the next request is unaffected.
 
 ## 4. Validate
 
@@ -920,6 +960,28 @@ LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
 }
 ```
 
+## 3c-2. 服务器超时与心跳
+
+bridge 显式设置 Node HTTP 服务器超时，避免长流被 Node 默认值截断。单位均为毫秒；`0` 表示禁用。
+
+- `server.timeoutMs`（默认 `0`，禁用）：响应期间的 socket 不活跃超时。故意保持禁用——上游等待由 `lib/upstream.js` 的上游超时管；设短会截断合法的长流。
+- `server.requestTimeoutMs`（默认 `0`，禁用）：接收完整请求（头+正文）的时限。禁用是因为大上下文上传可能合理地超过 Node 5 分钟默认值。
+- `server.headersTimeoutMs`（默认 `65000`）：接收请求头的时限。必须大于 `keepAliveTimeoutMs`，否则 Node 会告警。
+- `server.keepAliveTimeoutMs`（默认 `5000`）：同一连接上两次请求之间的空闲 keep-alive 窗口。
+- `server.heartbeatIntervalMs`（默认 `15000`）：流式客户端在上游首字节前静默期间，bridge 每隔多久发一个 SSE `: ping` 注释帧保活。`0` 禁用。详见上文 ZCode 兼容的"流式保活"小节。
+
+```json
+{
+  "server": {
+    "timeoutMs": 0,
+    "requestTimeoutMs": 0,
+    "headersTimeoutMs": 65000,
+    "keepAliveTimeoutMs": 5000,
+    "heartbeatIntervalMs": 15000
+  }
+}
+```
+
 上游限制单独配置：
 
 - `upstream.timeoutMs`：完整响应超时，默认 `600000` 毫秒
@@ -960,6 +1022,12 @@ LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
 其余顶层字段和 `extra_body` 字段保持不变。该清理同时适用于流式和非流式请求。
 
 对于 `stream: false` 请求，如果上游返回完整 SSE 序列，bridge 会将其聚合为标准 OpenAI `chat.completion` 对象。响应归一化仅作用于非流式请求；流式响应正文仍原样透传。
+
+### 流式保活（修复 ZCode 子代理被取消）
+
+ZCode 子代理在上游"思考"（首字节前静默）超过数秒后会取消请求，表现为 `Agent was cancelled before the subagent returned findings or background launch completed`。ZCode 侧没有可调的 idle/流超时，因此 bridge 自行保活：对 `stream: true` 请求，bridge 立即提交 SSE 头，之后每隔 `server.heartbeatIntervalMs`（默认 `15000`；`0` 禁用）发一个 SSE 注释帧（`: ping\n\n`，所有 SSE 解析器均忽略），直到上游首个真实字节到达。心跳在首个上游字节、上游错误、客户端断开或关停时停止。Chat、Responses、Anthropic 三条流式路径均适用。
+
+仅 Chat 路径上，提前提交头意味着：若上游对 `stream: true` 请求返回非 SSE 正文（或 `204 No Content` 无正文），将以流内 SSE 错误帧 + `data: [DONE]` 上报，而非 HTTP 4xx/5xx——已进入 SSE 的客户端会看到一次干净的协议级失败，bridge 仍健康，下次请求不受影响。
 
 ## 4. 检测和启动
 
