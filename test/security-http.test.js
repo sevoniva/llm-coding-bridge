@@ -437,8 +437,15 @@ async function testChatRejectsEmptyUpstreamBody() {
         }),
       });
       const text = await response.text();
-      assert.equal(response.status, 502, text);
+      // Streaming path: the bridge commits SSE headers before fetching the
+      // upstream, so an empty upstream body becomes an SSE error frame rather
+      // than an HTTP 502. The client receives 200 + a `data: {...}` error and
+      // `data: [DONE]`, matching the SSE protocol for in-stream failures.
+      assert.equal(response.status, 200, text);
+      assert.match(response.headers.get("content-type") || "", /text\/event-stream/);
+      assert.match(text, /data: /);
       assert.match(text, /upstream_error/);
+      assert.match(text, /data: \[DONE\]/);
       const health = await fetch(`http://127.0.0.1:${bridgePort}/health`);
       assert.equal(health.status, 200);
     } finally {

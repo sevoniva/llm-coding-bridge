@@ -57,6 +57,7 @@ function usage() {
   llm-coding-bridge template codex
   llm-coding-bridge template codex-desktop
   llm-coding-bridge template claude
+  llm-coding-bridge template zcode
   llm-coding-bridge logs --lines 80
   llm-coding-bridge install-service [--config <file>]
   llm-coding-bridge restart-service [--config <file>]
@@ -283,6 +284,7 @@ function printTemplate(name) {
   let file = "codex.config.toml";
   if (name === "claude" || name === "claude-code") file = "claude-code.env";
   if (name === "codex-desktop") file = "codex-desktop.config.toml";
+  if (name === "zcode" || name === "z-code") file = "zcode.env";
   process.stdout.write(fs.readFileSync(path.join(__dirname, "..", "templates", file), "utf8"));
 }
 

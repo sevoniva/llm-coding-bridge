@@ -217,6 +217,10 @@ This option removes `chat_template_kwargs` from the top-level request and from `
 
 For a non-streaming request, the bridge also accepts an upstream response delivered as a complete SSE sequence and converts it into a standard OpenAI `chat.completion` JSON object. This keeps ZCode context compaction and other `stream: false` workflows compatible with endpoints that use SSE framing for non-streaming responses. Response normalization is limited to non-streaming requests; streaming response bodies pass through unchanged. Request cleanup applies to both modes when enabled.
 
+### Streaming keepalive (ZCode subagent cancellation fix)
+
+ZCode subagents can cancel a request that stays silent for more than a few seconds while the upstream "thinks" before its first byte, surfacing as `Agent was cancelled before the subagent returned findings or background launch completed`. ZCode has no client-side idle/stream timeout knob, so the bridge keeps the connection alive itself: for `stream: true` requests it commits SSE headers immediately, then emits an SSE comment frame (`: ping\n\n`, ignored by all SSE parsers) every `server.heartbeatIntervalMs` (default `15000`; `0` disables) until the upstream's first real byte. This applies to the Chat, Responses, and Anthropic streaming paths. On the Chat path only, committing headers early means an upstream that returns a non-SSE body to a `stream: true` request (or no body at all, e.g. `204 No Content`) is reported as an in-stream SSE error frame + `data: [DONE]` rather than an HTTP 4xx/5xx — clients already committed to SSE see a clean protocol-level failure.
+
 ## Run
 
 ```bash
@@ -543,6 +547,10 @@ bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-up
 启用后，bridge 仅移除请求顶层的 `chat_template_kwargs` 和 `extra_body.chat_template_kwargs`，其余字段保持不变。该清理同时适用于流式和非流式请求。
 
 对于 `stream: false` 请求，如果上游返回完整 SSE 序列，bridge 会将其聚合为标准 OpenAI `chat.completion` JSON 对象，以兼容 ZCode 的上下文压缩和摘要流程。响应归一化仅作用于非流式请求；流式响应正文仍原样透传。
+
+#### 流式保活（修复 ZCode 子代理被取消）
+
+ZCode 子代理在上游"思考"（首字节前静默）超过数秒后会取消请求，表现为 `Agent was cancelled before the subagent returned findings or background launch completed`。ZCode 侧没有可调的 idle/流超时，因此 bridge 自行保活：对 `stream: true` 请求，bridge 立即提交 SSE 头，之后每隔 `server.heartbeatIntervalMs`（默认 `15000`；`0` 禁用）发一个 SSE 注释帧（`: ping\n\n`，所有 SSE 解析器均忽略），直到上游首个真实字节到达。Chat、Responses、Anthropic 三条流式路径均适用。仅 Chat 路径上，提前提交头意味着：若上游对 `stream: true` 请求返回非 SSE 正文（或 `204 No Content` 无正文），将以流内 SSE 错误帧 + `data: [DONE]` 上报，而非 HTTP 4xx/5xx——已进入 SSE 的客户端会看到一次干净的协议级失败。
 
 ## Security
 

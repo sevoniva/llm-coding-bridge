@@ -6,3 +6,4 @@ dist/
 *.log
 bridge.config.json
 llm-coding-bridge.config.json
+.zcode/
