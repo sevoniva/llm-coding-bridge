@@ -28,4 +28,16 @@ jobs:
       - run: npm run repo:gate
       - run: npm run sca
       - run: npm test
-      - run: npm publish --provenance
+      - name: Skip if version already published
+        id: skip_check
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@sevoniva/llm-coding-bridge@$VERSION" version >/dev/null 2>&1; then
+            echo "Version $VERSION is already on npm. Skipping publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $VERSION not on npm. Will publish."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.skip_check.outputs.skip == 'false'
+        run: npm publish --provenance
