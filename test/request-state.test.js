@@ -102,6 +102,8 @@ function testConstructorSafelySnapshotsOnlyValidOwnPrimitiveOptions() {
   const state = createRequestState({ requestId: "req-1", model: "coding-fast" });
   assert.equal(state.requestId, "req-1");
   assert.equal(state.model, "coding-fast");
+  const qualifiedModel = createRequestState({ requestId: "req-1", model: "provider/model-family" });
+  assert.equal(qualifiedModel.model, "provider/model-family");
   const inherited = Object.create({ requestId: "inherited-secret" });
   inherited.model = "coding-fast";
   let inheritedError;
@@ -116,6 +118,7 @@ function testConstructorSafelySnapshotsOnlyValidOwnPrimitiveOptions() {
     [{ requestId: { private: "object-secret" } }, /object-secret/],
     [{ requestId: `unsafe secret ${"x".repeat(200)}` }, /unsafe secret|x{20}/],
     [{ model: `m${"x".repeat(160)}` }, /x{20}/],
+    [{ model: "provider/model\nsecret" }, /secret/],
     [Object.defineProperty({}, "requestId", { get() { throw new Error("getter-secret"); } }), /getter-secret/],
     [new Proxy({}, { getOwnPropertyDescriptor() { throw new Error("proxy-secret"); } }), /proxy-secret/],
   ];
@@ -127,6 +130,23 @@ function testConstructorSafelySnapshotsOnlyValidOwnPrimitiveOptions() {
     });
     assert.doesNotMatch(JSON.stringify(error), secret);
   }
+}
+
+function testConstructorRejectsProxyBeforeAnyTrapRuns() {
+  let prototypeReads = 0;
+  let descriptorReads = 0;
+  const options = new Proxy({}, {
+    getPrototypeOf() { prototypeReads += 1; throw new Error("prototype-secret"); },
+    getOwnPropertyDescriptor() { descriptorReads += 1; throw new Error("descriptor-secret"); },
+  });
+  let error;
+  assert.throws(() => createRequestState(options), (caught) => {
+    error = caught;
+    return caught instanceof BridgeError && caught.category === "local_config" && caught.code === "INVALID_REQUEST_STATE_OPTIONS";
+  });
+  assert.equal(prototypeReads, 0);
+  assert.equal(descriptorReads, 0);
+  assert.doesNotMatch(JSON.stringify(error), /prototype-secret|descriptor-secret/);
 }
 
 function testAttemptsAndHeartbeatsAreMonotonic() {
@@ -220,6 +240,7 @@ testInitialStateAndNormalSuccessPath();
 testTerminalExitsAndIllegalTransitions();
 testTransitionTableRejectsEverySkippedBackwardAndTerminalTransition();
 testConstructorSafelySnapshotsOnlyValidOwnPrimitiveOptions();
+testConstructorRejectsProxyBeforeAnyTrapRuns();
 testAttemptsAndHeartbeatsAreMonotonic();
 testNonSemanticChatDataDoesNotStartStreaming();
 testSemanticChatDataStartsStreaming();
