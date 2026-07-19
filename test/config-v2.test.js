@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { normalizeConfigDocument } = require("../lib/config-v2");
-const { getApiKey, loadConfig, resolveUpstream } = require("../lib/config");
+const { getApiKey, loadConfig, resolveUpstream, upstreamUrl } = require("../lib/config");
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -386,6 +386,110 @@ function testUrlValidationAndNormalization() {
     document.providers[0].baseUrl = baseUrl;
     assert.equal(normalizeConfigDocument(document, "/tmp/url.json").routes[0].baseUrl, expected);
   }
+
+  const v2Query = v2Document();
+  v2Query.providers[0].baseUrl = "https://api.example.com/v1/?region=test";
+  assert.equal(
+    upstreamUrl(normalizeConfigDocument(v2Query, "/tmp/v2-query.json").routes[0]),
+    "https://api.example.com/v1/chat/completions?region=test"
+  );
+  const v1Query = normalizeConfigDocument({
+    upstream: {
+      baseUrl: "https://api.example.com/v1/?region=test",
+      model: "legacy-query",
+      apiKeyEnv: "LEGACY_QUERY_KEY",
+    },
+  }, "/tmp/v1-query.json");
+  assert.equal(
+    upstreamUrl(v1Query.routes[0]),
+    "https://api.example.com/v1/chat/completions?region=test"
+  );
+}
+
+function trappingProxy(target) {
+  let trapCount = 0;
+  const fail = () => {
+    trapCount += 1;
+    throw new Error("proxy-trap-secret-must-not-appear");
+  };
+  return {
+    proxy: new Proxy(target, {
+      get: fail,
+      getPrototypeOf: fail,
+      getOwnPropertyDescriptor: fail,
+      ownKeys: fail,
+    }),
+    trapCount: () => trapCount,
+  };
+}
+
+function assertProxyRejected(invoke, fixture) {
+  assert.throws(invoke, (error) => {
+    assert.equal(fixture.trapCount(), 0);
+    assert.match(error.message, /plain data/i);
+    assert.doesNotMatch(error.message, /proxy-trap-secret-must-not-appear/);
+    return true;
+  });
+}
+
+function testProxyObjectsAreRejectedWithoutTraps() {
+  let fixture = trappingProxy(v2Document());
+  assertProxyRejected(
+    () => normalizeConfigDocument(fixture.proxy, "/tmp/root-proxy.json"),
+    fixture
+  );
+
+  fixture = trappingProxy({});
+  assertProxyRejected(
+    () => normalizeConfigDocument(v2Document(), "/tmp/options-proxy.json", fixture.proxy),
+    fixture
+  );
+
+  fixture = trappingProxy({ reliabilityPolicies: {} });
+  assertProxyRejected(
+    () => normalizeConfigDocument(v2Document(), "/tmp/profile-proxy.json", { profile: fixture.proxy }),
+    fixture
+  );
+
+  fixture = trappingProxy(v2Document().providers[0]);
+  let document = v2Document();
+  document.providers[0] = fixture.proxy;
+  assertProxyRejected(
+    () => normalizeConfigDocument(document, "/tmp/provider-proxy.json"),
+    fixture
+  );
+
+  fixture = trappingProxy(v2Document().providers[0].models[0]);
+  document = v2Document();
+  document.providers[0].models[0] = fixture.proxy;
+  assertProxyRejected(
+    () => normalizeConfigDocument(document, "/tmp/model-proxy.json"),
+    fixture
+  );
+
+  fixture = trappingProxy(v2Document().credentials["model-a"]);
+  document = v2Document();
+  document.credentials["model-a"] = fixture.proxy;
+  assertProxyRejected(
+    () => normalizeConfigDocument(document, "/tmp/credential-proxy.json"),
+    fixture
+  );
+
+  fixture = trappingProxy(v2Document().providers[0].models[0].capabilities);
+  document = v2Document();
+  document.providers[0].models[0].capabilities = fixture.proxy;
+  assertProxyRejected(
+    () => normalizeConfigDocument(document, "/tmp/capability-proxy.json"),
+    fixture
+  );
+
+  fixture = trappingProxy({ headerTimeoutMs: 700000 });
+  document = v2Document();
+  document.providers[0].models[0].reliability = fixture.proxy;
+  assertProxyRejected(
+    () => normalizeConfigDocument(document, "/tmp/reliability-proxy.json"),
+    fixture
+  );
 }
 
 function testCapabilitiesValidation() {
@@ -575,6 +679,7 @@ function main() {
   testExactVersionTwoResolution();
   testLoadConfigIntegrationAndNoRewrite();
   testShapeAndIdentifierValidation();
+  testProxyObjectsAreRejectedWithoutTraps();
   testUrlValidationAndNormalization();
   testCapabilitiesValidation();
   testReliabilityValidation();
