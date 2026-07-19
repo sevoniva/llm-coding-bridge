@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { normalizeConfigDocument } = require("../lib/config-v2");
-const { getApiKey, loadConfig, resolveUpstream, upstreamUrl } = require("../lib/config");
+const { getApiKey, loadConfig, normalizeServer, resolveUpstream, upstreamUrl } = require("../lib/config");
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -59,9 +59,9 @@ function assertFrozenTree(value, seen = new Set()) {
   for (const child of Object.values(value)) assertFrozenTree(child, seen);
 }
 
-function expectInvalid(document, pattern, options) {
+function expectInvalid(document, pattern, options, configPath = "/tmp/generic-config.json") {
   assert.throws(
-    () => normalizeConfigDocument(document, "/tmp/generic-config.json", options),
+    () => normalizeConfigDocument(document, configPath, options),
     pattern
   );
 }
@@ -235,6 +235,38 @@ function testVersionOneCompatibility() {
   assert.equal(resolveUpstream(both, "legacy-default"), null);
 }
 
+function testVersionOneLanAndUnusedListCompatibility() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "lcb-config-v1-compat-"));
+  try {
+    const lanPath = path.join(directory, "lan.json");
+    fs.writeFileSync(lanPath, JSON.stringify({
+      upstream: {
+        baseUrl: "http://192.168.1.20:11434/v1",
+        model: "legacy-lan",
+        apiKeyEnv: "LEGACY_LAN_KEY",
+      },
+    }));
+    const lan = loadConfig(lanPath);
+    assert.equal(lan.routes[0].baseUrl, "http://192.168.1.20:11434/v1");
+    assert.equal(upstreamUrl(lan.routes[0]), "http://192.168.1.20:11434/v1/chat/completions");
+
+    const unusedListPath = path.join(directory, "unused-list.json");
+    fs.writeFileSync(unusedListPath, JSON.stringify({
+      upstream: {
+        baseUrl: "https://legacy.example.com/v1",
+        model: "legacy-single",
+        apiKeyEnv: "LEGACY_SINGLE_KEY",
+      },
+      upstreams: "unused-in-version-one",
+    }));
+    const unusedList = loadConfig(unusedListPath);
+    assert.equal(unusedList.routes.length, 1);
+    assert.equal(unusedList.defaultUpstream.alias, "legacy-single");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function testExactVersionTwoResolution() {
   const config = normalizeConfigDocument(v2Document(), "/tmp/v2.json");
   assert.equal(resolveUpstream(config, "coding-fast"), config.routes[0]);
@@ -404,6 +436,19 @@ function testUrlValidationAndNormalization() {
     upstreamUrl(v1Query.routes[0]),
     "https://api.example.com/v1/chat/completions?region=test"
   );
+
+  for (const control of ["\t", "\n"]) {
+    const v2Control = v2Document();
+    v2Control.providers[0].baseUrl = `https://api.example.com/v1${control}?region=test`;
+    expectInvalid(v2Control, /baseUrl/i);
+    expectInvalid({
+      upstream: {
+        baseUrl: `https://legacy.example.com/v1${control}?region=test`,
+        model: "legacy-control",
+        apiKeyEnv: "LEGACY_CONTROL_KEY",
+      },
+    }, /baseUrl/i);
+  }
 }
 
 function trappingProxy(target) {
@@ -490,6 +535,123 @@ function testProxyObjectsAreRejectedWithoutTraps() {
     () => normalizeConfigDocument(document, "/tmp/reliability-proxy.json"),
     fixture
   );
+
+  fixture = trappingProxy({ path: "/tmp/config.json" });
+  assertProxyRejected(
+    () => normalizeConfigDocument(v2Document(), fixture.proxy),
+    fixture
+  );
+  for (const configPath of [undefined, null, {}, [], 1, true, Symbol("path")]) {
+    assert.throws(() => normalizeConfigDocument(v2Document(), configPath), /configPath/i);
+  }
+}
+
+function testReferencedCredentialValidation() {
+  const validCases = [
+    [{ source: "env", env: "VALID_ENV_1" }, { apiKeyEnv: "VALID_ENV_1" }],
+    [
+      { source: "command", command: { command: "/usr/bin/printf", args: ["synthetic", ""] } },
+      { apiKeyCommand: { command: "/usr/bin/printf", args: ["synthetic", ""] } },
+    ],
+    [{ source: "client" }, { apiKeySource: "client" }],
+  ];
+  for (const [descriptor, projection] of validCases) {
+    const document = v2Document();
+    document.credentials["model-a"] = descriptor;
+    const route = normalizeConfigDocument(document, "/tmp/credential-valid.json").routes[0];
+    for (const [key, value] of Object.entries(projection)) assert.deepEqual(route[key], value);
+    assert.equal(Object.isFrozen(route.credential), true);
+    if (route.credential.command) assert.equal(Object.isFrozen(route.credential.command.args), true);
+  }
+
+  const invalidDescriptors = [
+    {},
+    { source: "unknown" },
+    { source: "env" },
+    { source: "env", env: "" },
+    { source: "env", env: "1INVALID" },
+    { source: "env", env: "INVALID-NAME" },
+    { source: "env", env: "VALID_ENV", command: { command: "/usr/bin/printf", args: [] } },
+    { source: "env", env: "VALID_ENV", client: true },
+    { source: "command", command: "/usr/bin/printf synthetic" },
+    { source: "command", command: {} },
+    { source: "command", command: { command: "", args: [] } },
+    { source: "command", command: { command: "/usr/bin/printf\n", args: [] } },
+    { source: "command", command: { command: "/usr/bin/printf", args: "synthetic" } },
+    { source: "command", command: { command: "/usr/bin/printf", args: [1] } },
+    { source: "command", command: { command: "/usr/bin/printf", args: [], [["sh", "ell"].join("")]: true } },
+    { source: "command", command: { command: "/usr/bin/printf", args: [] }, env: "VALID_ENV" },
+    { source: "command", command: { command: "/usr/bin/printf", args: [] }, client: true },
+    { source: "client", env: "VALID_ENV" },
+    { source: "client", command: { command: "/usr/bin/printf", args: [] } },
+  ];
+  for (const descriptor of invalidDescriptors) {
+    const document = v2Document();
+    document.credentials["model-a"] = descriptor;
+    assert.throws(
+      () => normalizeConfigDocument(document, "/tmp/credential-invalid.json"),
+      (error) => {
+        assert.match(error.message, /credential descriptor/i);
+        assert.doesNotMatch(error.message, /VALID_ENV|printf|synthetic/);
+        return true;
+      }
+    );
+  }
+
+  const futureDescriptor = v2Document();
+  futureDescriptor.credentials["future-model"] = {
+    source: "future-source",
+    providerData: { nested: ["kept", "frozen"] },
+  };
+  const normalized = normalizeConfigDocument(futureDescriptor, "/tmp/credential-future.json");
+  assert.deepEqual(normalized.credentials["future-model"], futureDescriptor.credentials["future-model"]);
+  assert.notEqual(normalized.credentials["future-model"], futureDescriptor.credentials["future-model"]);
+  assertFrozenTree(normalized.credentials["future-model"]);
+}
+
+function testServerScalarNormalizationAndFreeze() {
+  const nested = { retained: false };
+  const raw = {
+    host: "[::1]",
+    port: "0",
+    localToken: "local-token",
+    heartbeatIntervalMs: "0",
+    timeoutMs: "1",
+    requestTimeoutMs: "2",
+    headersTimeoutMs: "65000",
+    keepAliveTimeoutMs: "5000",
+    maxBodyBytes: "20971520",
+    unknownScalar: "ignored",
+    unknownNested: nested,
+  };
+  const server = normalizeServer(raw);
+  assert.deepEqual(server, {
+    host: "::1",
+    port: 0,
+    localToken: "local-token",
+    heartbeatIntervalMs: 0,
+    timeoutMs: 1,
+    requestTimeoutMs: 2,
+    headersTimeoutMs: 65000,
+    keepAliveTimeoutMs: 5000,
+    maxBodyBytes: 20971520,
+  });
+  assert.equal(Object.isFrozen(server), true);
+  assert.equal(Object.hasOwn(server, "unknownScalar"), false);
+  assert.equal(Object.hasOwn(server, "unknownNested"), false);
+  nested.retained = true;
+  assert.equal(Object.hasOwn(server, "unknownNested"), false);
+  assert.throws(() => { server.port = 1234; }, TypeError);
+
+  for (const invalid of [
+    { host: {} },
+    { port: -1 },
+    { port: 65536 },
+    { localToken: {} },
+    { maxBodyBytes: 0 },
+  ]) {
+    assert.throws(() => normalizeServer(invalid), /server\./i);
+  }
 }
 
 function testCapabilitiesValidation() {
@@ -676,11 +838,14 @@ function main() {
   testVersionTwoNormalization();
   testReliabilityResolutionAndProvenance();
   testVersionOneCompatibility();
+  testVersionOneLanAndUnusedListCompatibility();
   testExactVersionTwoResolution();
   testLoadConfigIntegrationAndNoRewrite();
   testShapeAndIdentifierValidation();
   testProxyObjectsAreRejectedWithoutTraps();
   testUrlValidationAndNormalization();
+  testReferencedCredentialValidation();
+  testServerScalarNormalizationAndFreeze();
   testCapabilitiesValidation();
   testReliabilityValidation();
   testDataOnlyAndSafeErrors();
