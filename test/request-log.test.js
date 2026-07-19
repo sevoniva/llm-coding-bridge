@@ -250,6 +250,36 @@ function testStoreResultMustPreserveEveryFallbackFieldExactly() {
   }
 }
 
+function testStoreResultRejectsHiddenOrUnknownOwnFields() {
+  const context = requestContext({ headers: { "x-request-id": "req-safe" } }, "/v1/chat/completions", "safe-model");
+  let getterCalls = 0;
+  const additions = [
+    (record) => { record.prompt = "private prompt"; },
+    (record) => { record.credentials = "private credentials"; },
+    (record) => { Object.defineProperty(record, "hidden", { value: "private hidden" }); },
+    (record) => { record[Symbol("private symbol")] = "private symbol"; },
+    (record) => { Object.defineProperty(record, "unknownAccessor", { enumerable: true, get() { getterCalls += 1; throw new Error("getter must not run"); } }); },
+    (record) => { record.toJSON = () => { throw new Error("toJSON must not run"); }; },
+  ];
+  for (const add of additions) {
+    const store = {
+      append(event) {
+        const record = { ...event, sequence: 1, timestamp: 1 };
+        add(record);
+        return record;
+      },
+    };
+    const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, store)));
+    const record = JSON.parse(line.slice("[bridge] ".length));
+    assert.equal(record.sequence, undefined);
+    assert.equal(record.timestamp, undefined);
+    assert.equal(record.type, "request");
+    assert.equal(record.requestId, "req-safe");
+    assert.doesNotMatch(line, /private|toJSON/);
+  }
+  assert.equal(getterCalls, 0);
+}
+
 testAllowlistedRequestDiagnostics();
 testUntrustedFieldsCannotInjectLogLines();
 testStoreBackedLogsUseOnlySafeStoredRecord();
@@ -261,4 +291,5 @@ testStoreCannotMutateFallbackAndThenThrow();
 testInvalidStartedAtDoesNotThrowOrEmitElapsedTime();
 testProxyContextAndDetailsAreIgnoredWithoutTraps();
 testStoreResultMustPreserveEveryFallbackFieldExactly();
+testStoreResultRejectsHiddenOrUnknownOwnFields();
 console.log("request-log tests passed");
