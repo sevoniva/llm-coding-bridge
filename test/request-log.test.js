@@ -106,7 +106,53 @@ function testStoreBackedLogsUseOnlySafeStoredRecord() {
   assert.deepEqual(store.snapshot(), [record]);
 }
 
+function testAccessorBackedEventStoreIsIgnored() {
+  const context = requestContext({}, "/v1/chat/completions", "safe-model");
+  let getterCalls = 0;
+  const store = {};
+  Object.defineProperty(store, "append", {
+    get() {
+      getterCalls += 1;
+      throw new Error("event store getter must not run");
+    },
+  });
+  const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, store)));
+  assert.equal(getterCalls, 0);
+  assert.doesNotMatch(line, /event store getter/);
+}
+
+function testProxyEventStoreIsIgnoredWithoutTraps() {
+  const context = requestContext({}, "/v1/chat/completions", "safe-model");
+  let trapCalls = 0;
+  const store = new Proxy({}, {
+    get() { trapCalls += 1; throw new Error("proxy get trap"); },
+    getOwnPropertyDescriptor() { trapCalls += 1; throw new Error("proxy descriptor trap"); },
+    getPrototypeOf() { trapCalls += 1; throw new Error("proxy prototype trap"); },
+  });
+  const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, store)));
+  assert.equal(trapCalls, 0);
+  assert.doesNotMatch(line, /proxy.*trap/);
+}
+
+function testFailedEventStoreAppendFallsBackToSafeRecord() {
+  const context = requestContext({ headers: { "x-request-id": "req-safe" } }, "/v1/chat/completions", "safe-model");
+  const store = {
+    append() {
+      throw new Error("private event store failure");
+    },
+  };
+  const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, store)));
+  const record = JSON.parse(line.slice("[bridge] ".length));
+  assert.equal(record.type, "request");
+  assert.equal(record.requestId, "req-safe");
+  assert.equal(record.sequence, undefined);
+  assert.doesNotMatch(line, /private event store failure/);
+}
+
 testAllowlistedRequestDiagnostics();
 testUntrustedFieldsCannotInjectLogLines();
 testStoreBackedLogsUseOnlySafeStoredRecord();
+testAccessorBackedEventStoreIsIgnored();
+testProxyEventStoreIsIgnoredWithoutTraps();
+testFailedEventStoreAppendFallsBackToSafeRecord();
 console.log("request-log tests passed");
