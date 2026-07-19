@@ -107,7 +107,7 @@ function testNestedCauseSerializationExcludesMessages() {
   };
   const serialized = JSON.stringify(classify(raw));
   assert.doesNotMatch(serialized, /nested transport secret/);
-  assert.match(serialized, /UPSTREAM_CONNECTION_RESET/);
+  assert.match(serialized, /UPSTREAM_NETWORK_FAILURE/);
 }
 
 function testRetryAfterParsing() {
@@ -118,12 +118,19 @@ function testRetryAfterParsing() {
   for (const value of ["2.5", "-1", Infinity, "9007199254741", "2099-01-01T00:00:00Z", "Thu, 01 Jan 1970 00:00:03 GMT trailing", "Thu, 29 Feb 2023 00:00:03 GMT", "Wed, 01 Jan 1970 00:00:03 GMT"]) {
     assert.equal(parseRetryAfter(value, 0), undefined, String(value));
   }
-  assert.equal(parseRetryAfter("Thu, 01 Jan 1970 00:00:03 GMT", 3000), undefined);
+  assert.equal(parseRetryAfter("Thu, 01 Jan 1970 00:00:03 GMT", 3000), 0);
+  assert.equal(parseRetryAfter("Thu, 01 Jan 1970 00:00:03 GMT", 4000), 0);
 }
 
 function testTimeoutRetryAfterPropagation() {
   const classified = classify({ status: 408, headers: { "retry-after": "3" } });
   assert.equal(classified.retryAfterMs, 3000);
+}
+
+function testStableTransportCodes() {
+  assert.equal(classify({ code: "UND_ERR_HEADERS_TIMEOUT" }).code, "UPSTREAM_TIMEOUT");
+  assert.equal(classify({ code: "ECONNREFUSED" }).code, "UPSTREAM_NETWORK_FAILURE");
+  assert.equal(classify({ code: "UND_ERR_SOCKET" }).code, "UPSTREAM_NETWORK_FAILURE");
 }
 
 function testExistingParserProtocolErrorClassification() {
@@ -150,12 +157,34 @@ function testSafeErrorRecordOwnFieldsOnly() {
   });
 }
 
+function testSafeErrorRecordRejectsAccessorsAndThrowingProxies() {
+  let reads = 0;
+  const changingGetter = {};
+  Object.defineProperty(changingGetter, "category", { enumerable: true, get() { reads += 1; return reads === 1 ? "rate_limit" : "secret"; } });
+  assert.equal(safeErrorRecord(changingGetter).category, "network");
+  assert.equal(reads, 0);
+  const throwingGetter = {};
+  Object.defineProperty(throwingGetter, "code", { get() { throw new Error("secret getter"); } });
+  assert.doesNotThrow(() => safeErrorRecord(throwingGetter));
+  const throwingProxy = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error("secret proxy"); } });
+  assert.doesNotThrow(() => safeErrorRecord(throwingProxy));
+}
+
+function testMalformedParserErrorsNormalizeAsProtocol() {
+  for (const [body, contentType] of [["{", "application/json"], ["data: {\n\n", "text/event-stream"], ["data: {\"error\":{}}\n\n", "text/event-stream"], ["data: {\"choices\":[]}\n\n", "text/event-stream"]]) {
+    assert.throws(() => parseNonStreamChatResponse(body, contentType), (error) => classify(error).category === "protocol" && classify(error).retryable === true);
+  }
+}
+
 testClassifierTable();
 testSafeSerialization();
 testSerializationExcludesRawErrorData();
 testNestedCauseSerializationExcludesMessages();
 testRetryAfterParsing();
 testTimeoutRetryAfterPropagation();
+testStableTransportCodes();
 testExistingParserProtocolErrorClassification();
 testSafeErrorRecordOwnFieldsOnly();
+testSafeErrorRecordRejectsAccessorsAndThrowingProxies();
+testMalformedParserErrorsNormalizeAsProtocol();
 console.log("bridge error tests passed");
