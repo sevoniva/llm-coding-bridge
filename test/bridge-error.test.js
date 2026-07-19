@@ -171,7 +171,7 @@ function testSafeErrorRecordRejectsAccessorsAndThrowingProxies() {
 }
 
 function testMalformedParserErrorsNormalizeAsProtocol() {
-  for (const [body, contentType] of [["{", "application/json"], ["data: {\n\n", "text/event-stream"], ["data: {\"error\":{}}\n\n", "text/event-stream"], ["data: {\"choices\":[]}\n\n", "text/event-stream"]]) {
+  for (const [body, contentType] of [["{", "application/json"], ["data: {\n\n", "text/event-stream"], ["data: {\"error\":{}}\n\n", "text/event-stream"], ["data: {\"choices\":[]}\n\n", "text/event-stream"], ["data: {\"choices\":[{\"index\":0,\"message\":{}},{\"index\":1,\"delta\":{}}]}\n\n", "text/event-stream"], ["data: {\"choices\":[{\"index\":0,\"delta\":{}}]}\n\ndata: {\"choices\":[{\"index\":0,\"message\":{}}]}\n\n", "text/event-stream"]]) {
     assert.throws(() => parseNonStreamChatResponse(body, contentType), (error) => classify(error).category === "protocol" && classify(error).retryable === true);
   }
 }
