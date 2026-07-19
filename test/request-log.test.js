@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { requestContext, logRequestEvent } = require("../lib/request-log");
+const { createEventStore } = require("../lib/event-store");
 
 function captureErrorLine(callback) {
   const original = console.error;
@@ -85,6 +86,27 @@ function testUntrustedFieldsCannotInjectLogLines() {
   assert.match(line, /trace-safe/);
 }
 
+function testStoreBackedLogsUseOnlySafeStoredRecord() {
+  const store = createEventStore({ now: () => 1700000000000 });
+  const context = requestContext({ headers: { "x-request-id": "req-safe" } }, "/v1/chat/completions", "safe-model");
+  const details = { status: 502 };
+  Object.defineProperty(details, "error", {
+    enumerable: true,
+    get() {
+      throw new Error("private error getter must not run");
+    },
+  });
+  const line = captureErrorLine(() => logRequestEvent(context, "upstream_transport_error", details, store));
+  const record = JSON.parse(line.slice("[bridge] ".length));
+  assert.deepEqual(Object.keys(record).sort(), [
+    "elapsedMs", "model", "phase", "requestId", "route", "sequence", "status", "timestamp", "type",
+  ]);
+  assert.equal(record.sequence, 1);
+  assert.equal(record.timestamp, 1700000000000);
+  assert.deepEqual(store.snapshot(), [record]);
+}
+
 testAllowlistedRequestDiagnostics();
 testUntrustedFieldsCannotInjectLogLines();
+testStoreBackedLogsUseOnlySafeStoredRecord();
 console.log("request-log tests passed");
