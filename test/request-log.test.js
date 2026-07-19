@@ -212,6 +212,44 @@ function testProxyContextAndDetailsAreIgnoredWithoutTraps() {
   assert.equal(JSON.parse(line.slice("[bridge] ".length)).type, "request");
 }
 
+function testStoreResultMustPreserveEveryFallbackFieldExactly() {
+  const context = requestContext({ headers: { "x-request-id": "req-safe", "x-zcode-trace-id": "trace-safe" } }, "/v1/chat/completions", "safe-model");
+  const details = { status: 502, error: { code: "safe-code" } };
+  const alterations = [
+    (record) => { delete record.requestId; },
+    (record) => { record.type = "other"; },
+    (record) => { record.phase = "other"; },
+    (record) => { record.requestId = "other"; },
+    (record) => { record.route = "/other"; },
+    (record) => { record.status = 500; },
+    (record) => { record.code = "other-code"; },
+    (record) => { record.outcome = "injected"; },
+    (record) => { record.code = "credential-token"; },
+    (record) => { record.sequence = 0; },
+  ];
+  for (const alter of alterations) {
+    const store = {
+      append(event) {
+        const record = { ...event, sequence: 1, timestamp: 1 };
+        alter(record);
+        return record;
+      },
+    };
+    const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", details, store)));
+    const record = JSON.parse(line.slice("[bridge] ".length));
+    assert.equal(record.sequence, undefined);
+    assert.equal(record.timestamp, undefined);
+    assert.equal(record.type, "request");
+    assert.equal(record.phase, "request_start");
+    assert.equal(record.requestId, "req-safe");
+    assert.equal(record.route, "/v1/chat/completions");
+    assert.equal(record.status, 502);
+    assert.equal(record.code, "safe-code");
+    assert.equal(record.outcome, undefined);
+    assert.doesNotMatch(line, /credential-token|other-code|injected/);
+  }
+}
+
 testAllowlistedRequestDiagnostics();
 testUntrustedFieldsCannotInjectLogLines();
 testStoreBackedLogsUseOnlySafeStoredRecord();
@@ -222,4 +260,5 @@ testHostileStoreResultsNeverReachLogs();
 testStoreCannotMutateFallbackAndThenThrow();
 testInvalidStartedAtDoesNotThrowOrEmitElapsedTime();
 testProxyContextAndDetailsAreIgnoredWithoutTraps();
+testStoreResultMustPreserveEveryFallbackFieldExactly();
 console.log("request-log tests passed");
