@@ -145,7 +145,7 @@ async function testHeartbeatHelper() {
 }
 
 // 2. Chat path: with a slow upstream (headers delayed 800ms), the client receives
-//    HTTP 200 + SSE headers + `: ping` heartbeat BEFORE the upstream responds.
+//    HTTP 200 + SSE headers + a valid empty completion event BEFORE the upstream responds.
 async function testChatEmitsHeadersBeforeUpstream() {
   let upstreamGotRequest = false;
   await withServer((_req, res) => {
@@ -174,8 +174,13 @@ async function testChatEmitsHeadersBeforeUpstream() {
       assert.match(response.headers.get("content-type"), /text\/event-stream/);
       const { reader, first } = await readFirstChunk(response, 600);
       const firstText = first.value ? new TextDecoder().decode(first.value) : "";
-      // Must receive bytes (a ping) BEFORE the 800ms upstream delay elapses.
-      assert.match(firstText, /^: ping\n\n/, `expected ping before upstream responds, got: ${JSON.stringify(firstText)}`);
+      // Must receive a parseable OpenAI data event BEFORE the upstream responds.
+      const heartbeatLine = firstText.split("\n").find((line) => line.startsWith("data: "));
+      assert.ok(heartbeatLine, `expected data heartbeat before upstream responds, got: ${JSON.stringify(firstText)}`);
+      const heartbeat = JSON.parse(heartbeatLine.slice(6));
+      assert.equal(heartbeat.object, "chat.completion.chunk");
+      assert.equal(heartbeat.model, "test-model");
+      assert.deepEqual(heartbeat.choices[0].delta, {});
       assert.ok(upstreamGotRequest, "upstream should have been called");
       reader.cancel().catch(() => {});
     } finally {
@@ -184,12 +189,13 @@ async function testChatEmitsHeadersBeforeUpstream() {
   });
 }
 
-// 3. Chat path: heartbeat stops after the first real upstream byte (no pings mid-stream).
-async function testChatHeartbeatStopsOnFirstByte() {
+// 3. Chat path: a valid empty completion event keeps the client active when the
+//    upstream stalls after its first real byte.
+async function testChatHeartbeatContinuesDuringMidStreamIdle() {
   await withServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.write('data: {"choices":[{"delta":{"content":"first"}}]}\n\n');
-    // Then stall — if heartbeat kept firing, pings would appear between chunks.
+    // Then stall long enough for multiple downstream heartbeat intervals.
     setTimeout(() => {
       res.write('data: {"choices":[{"delta":{"content":"second"}}]}\n\n');
       res.write("data: [DONE]\n\n");
@@ -197,7 +203,7 @@ async function testChatHeartbeatStopsOnFirstByte() {
     }, 400);
   }, async (port) => {
     const configuredUpstream = upstream(port);
-    const bridge = startBridge(configuredUpstream);
+    const bridge = startBridge(configuredUpstream, { heartbeatIntervalMs: 100 });
     const bPort = await bridgePort(bridge);
     try {
       const response = await fetch(`http://127.0.0.1:${bPort}/v1/chat/completions`, {
@@ -214,14 +220,18 @@ async function testChatHeartbeatStopsOnFirstByte() {
       assert.match(text, /"first"/);
       assert.match(text, /"second"/);
       assert.match(text, /data: \[DONE\]/);
-      // A leading ping (before upstream responds) is allowed/expected, but NO ping
-      // should appear BETWEEN the "first" and "second" chunks (heartbeat stopped
-      // on first byte). Extract the segment between first and second and assert no ping.
       const firstIdx = text.indexOf('"first"');
       const secondIdx = text.indexOf('"second"');
       assert.ok(firstIdx >= 0 && secondIdx > firstIdx, "both chunks should be present in order");
       const between = text.slice(firstIdx, secondIdx);
-      assert.doesNotMatch(between, /: ping/, `heartbeat should be stopped between chunks, found ping: ${JSON.stringify(between)}`);
+      const heartbeatLine = between
+        .split("\n")
+        .find((line) => line.startsWith("data: ") && line.includes('"chat.completion.chunk"'));
+      assert.ok(heartbeatLine, `missing data heartbeat during upstream gap: ${JSON.stringify(between)}`);
+      const heartbeat = JSON.parse(heartbeatLine.slice(6));
+      assert.equal(heartbeat.model, "test-model");
+      assert.deepEqual(heartbeat.choices[0].delta, {});
+      assert.equal(heartbeat.choices[0].finish_reason, null);
     } finally {
       await closeBridge(bridge);
     }
@@ -464,8 +474,8 @@ async function main() {
   console.log("testHeartbeatHelper passed");
   await testChatEmitsHeadersBeforeUpstream();
   console.log("testChatEmitsHeadersBeforeUpstream passed");
-  await testChatHeartbeatStopsOnFirstByte();
-  console.log("testChatHeartbeatStopsOnFirstByte passed");
+  await testChatHeartbeatContinuesDuringMidStreamIdle();
+  console.log("testChatHeartbeatContinuesDuringMidStreamIdle passed");
   await testChatStreamErrorOnUpstream204();
   console.log("testChatStreamErrorOnUpstream204 passed");
   await testChatStreamErrorOnUpstreamNonSse();
