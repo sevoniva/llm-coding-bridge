@@ -61,6 +61,46 @@ function testRedactsUntrustedInputWithoutAccessingGettersOrProxies() {
   assert.deepEqual(Object.keys(proxyRecord).sort(), ["sequence", "timestamp"]);
 }
 
+function testWideObjectsAndHugeStringsCannotReachTheStore() {
+  const store = createEventStore({ now: () => 1700000000000 });
+  let getterCalls = 0;
+  const event = { type: "x".repeat(161), phase: "start" };
+  for (let index = 0; index < 100; index += 1) {
+    Object.defineProperty(event, `forbidden${index}`, {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error("forbidden getter must not run"); },
+    });
+  }
+  const record = store.append(event);
+  assert.equal(getterCalls, 0);
+  assert.equal(record.type, undefined);
+  assert.equal(record.phase, "start");
+}
+
+function testInvalidClockAndCursorValuesAreRejectedSafely() {
+  const clocks = [() => Infinity, () => -1, () => Number.MAX_SAFE_INTEGER + 1];
+  for (const now of clocks) {
+    const store = createEventStore({ now });
+    const record = store.append({ type: "request" });
+    assert.ok(Number.isSafeInteger(record.timestamp));
+    assert.ok(record.timestamp >= 0);
+  }
+  const store = createEventStore({ now: () => 1700000000000 });
+  store.append({ type: "request" });
+  assert.deepEqual(store.snapshot({ afterSequence: Number.MAX_SAFE_INTEGER + 1 }), []);
+  assert.deepEqual(store.snapshot({ limit: Number.MAX_SAFE_INTEGER + 1 }), []);
+  assert.deepEqual(store.snapshot({ limit: 0 }), []);
+}
+
+function testSequenceOrdersEventsWhenClockMovesBackwards() {
+  const timestamps = [20, 10];
+  const store = createEventStore({ now: () => timestamps.shift() });
+  store.append({ type: "request" });
+  store.append({ type: "request" });
+  assert.deepEqual(store.snapshot().map((event) => event.sequence), [1, 2]);
+  assert.deepEqual(store.snapshot().map((event) => event.timestamp), [20, 10]);
+}
+
 function testSnapshotsUseValidatedMonotonicCursorAndLimits() {
   const store = createEventStore({ capacity: 5, now: () => 1700000000000 });
   store.append({ type: "request", phase: "start" });
@@ -74,5 +114,8 @@ function testSnapshotsUseValidatedMonotonicCursorAndLimits() {
 testRingKeepsNewestEventsWithMonotonicSequence();
 testEventsAreImmutableCopies();
 testRedactsUntrustedInputWithoutAccessingGettersOrProxies();
+testWideObjectsAndHugeStringsCannotReachTheStore();
+testInvalidClockAndCursorValuesAreRejectedSafely();
+testSequenceOrdersEventsWhenClockMovesBackwards();
 testSnapshotsUseValidatedMonotonicCursorAndLimits();
 console.log("event-store tests passed");

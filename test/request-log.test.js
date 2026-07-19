@@ -149,10 +149,77 @@ function testFailedEventStoreAppendFallsBackToSafeRecord() {
   assert.doesNotMatch(line, /private event store failure/);
 }
 
+function testHostileStoreResultsNeverReachLogs() {
+  const context = requestContext({ headers: { "x-request-id": "req-safe" } }, "/v1/chat/completions", "safe-model");
+  const stores = [
+    { append() { return { toJSON() { throw new Error("malicious toJSON"); } }; } },
+    { append() { return new Proxy({}, { ownKeys() { throw new Error("result proxy trap"); } }); } },
+    { append() { const cyclic = {}; cyclic.self = cyclic; return cyclic; } },
+    { append() { return undefined; } },
+    { append() { return { sequence: 1, timestamp: 1, prompt: "private prompt", authorization: "Bearer secret-token" }; } },
+    { append() { return { sequence: 1 }; } },
+    { append() { return { sequence: Number.MAX_SAFE_INTEGER + 1, timestamp: Infinity, type: "request" }; } },
+  ];
+  for (const store of stores) {
+    const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, store)));
+    assert.doesNotMatch(line, /malicious|proxy|private prompt|secret-token|authorization/i);
+    const record = JSON.parse(line.slice("[bridge] ".length));
+    assert.equal(record.type, "request");
+    assert.equal(record.requestId, "req-safe");
+  }
+}
+
+function testStoreCannotMutateFallbackAndThenThrow() {
+  const context = requestContext({ headers: { "x-request-id": "req-safe" } }, "/v1/chat/completions", "safe-model");
+  let received;
+  const store = {
+    append(event) {
+      received = event;
+      try { event.requestId = "private mutation"; } catch {}
+      throw new Error("store failure");
+    },
+  };
+  const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, store)));
+  assert.ok(Object.isFrozen(received));
+  assert.equal(JSON.parse(line.slice("[bridge] ".length)).requestId, "req-safe");
+}
+
+function testInvalidStartedAtDoesNotThrowOrEmitElapsedTime() {
+  const invalidValues = [Symbol("started"), -1, Infinity, Number.MAX_SAFE_INTEGER + 1];
+  for (const startedAt of invalidValues) {
+    const context = { requestId: "req-safe", route: "/v1/chat/completions", model: "safe-model", startedAt };
+    const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, {})));
+    assert.equal(JSON.parse(line.slice("[bridge] ".length)).elapsedMs, undefined);
+  }
+  let getterCalls = 0;
+  const context = { requestId: "req-safe", route: "/v1/chat/completions", model: "safe-model" };
+  Object.defineProperty(context, "startedAt", { get() { getterCalls += 1; throw new Error("startedAt getter"); } });
+  const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(context, "request_start", {}, {})));
+  assert.equal(getterCalls, 0);
+  assert.equal(JSON.parse(line.slice("[bridge] ".length)).elapsedMs, undefined);
+}
+
+function testProxyContextAndDetailsAreIgnoredWithoutTraps() {
+  let trapCalls = 0;
+  const traps = {
+    get() { trapCalls += 1; throw new Error("unexpected proxy getter"); },
+    getOwnPropertyDescriptor() { trapCalls += 1; throw new Error("unexpected proxy descriptor"); },
+  };
+  const line = captureErrorLine(() => assert.doesNotThrow(() => logRequestEvent(
+    new Proxy({}, traps), "request_start", new Proxy({}, traps), {},
+  )));
+  assert.equal(trapCalls, 0);
+  assert.equal(JSON.parse(line.slice("[bridge] ".length)).type, "request");
+}
+
 testAllowlistedRequestDiagnostics();
 testUntrustedFieldsCannotInjectLogLines();
 testStoreBackedLogsUseOnlySafeStoredRecord();
 testAccessorBackedEventStoreIsIgnored();
 testProxyEventStoreIsIgnoredWithoutTraps();
 testFailedEventStoreAppendFallsBackToSafeRecord();
+testHostileStoreResultsNeverReachLogs();
+testStoreCannotMutateFallbackAndThenThrow();
+testInvalidStartedAtDoesNotThrowOrEmitElapsedTime();
+testProxyContextAndDetailsAreIgnoredWithoutTraps();
 console.log("request-log tests passed");
