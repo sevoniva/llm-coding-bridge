@@ -300,12 +300,33 @@ async function testChatStreamErrorOnUpstream204() {
   });
 }
 
-// 5. Chat path: upstream returns application/json (non-SSE) for stream:true → bridge
-//    emits SSE error frame (it has already committed to text/event-stream).
-async function testChatStreamErrorOnUpstreamNonSse() {
+// 6. Chat path: some OpenAI-compatible upstreams intermittently ignore
+//    stream:true and return a normal JSON chat completion. Convert that
+//    completion to valid downstream SSE so a long ZCode turn can continue.
+async function testChatNormalizesJsonFallbackForStream() {
   await withServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ choices: [{ message: { content: "surprise json" } }] }));
+    res.end(JSON.stringify({
+      id: "chatcmpl-json-fallback",
+      object: "chat.completion",
+      created: 123,
+      model: "test-model",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "fallback text",
+          reasoning_content: "fallback reasoning",
+          tool_calls: [{
+            id: "call_json_fallback",
+            type: "function",
+            function: { name: "Write", arguments: "{\"path\":\"file.txt\"}" },
+          }],
+        },
+        finish_reason: "tool_calls",
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    }));
   }, async (port) => {
     const configuredUpstream = upstream(port);
     const bridge = startBridge(configuredUpstream);
@@ -323,15 +344,66 @@ async function testChatStreamErrorOnUpstreamNonSse() {
       const text = await response.text();
       assert.equal(response.status, 200, text);
       assert.match(response.headers.get("content-type"), /text\/event-stream/);
-      assert.match(text, /upstream_error|non-SSE/);
+      assert.doesNotMatch(text, /upstream_error|non-SSE/);
       assert.match(text, /data: \[DONE\]/);
+      const frames = text
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice(6)));
+      const completion = frames.find((frame) => frame.choices?.length > 0);
+      assert.equal(completion.id, "chatcmpl-json-fallback");
+      assert.equal(completion.object, "chat.completion.chunk");
+      assert.equal(completion.choices[0].delta.content, "fallback text");
+      assert.equal(completion.choices[0].delta.reasoning_content, "fallback reasoning");
+      assert.equal(completion.choices[0].delta.tool_calls[0].function.name, "Write");
+      assert.equal(completion.choices[0].finish_reason, "tool_calls");
+      const usage = frames.find((frame) => frame.choices?.length === 0 && frame.usage);
+      assert.equal(usage.usage.total_tokens, 15);
     } finally {
       await closeBridge(bridge);
     }
   });
 }
 
-// 6. Chat path: non-stream (stream:false) behavior unchanged — fetch then sendJson.
+// 7. A HTTP 200 JSON error is still a protocol failure for stream:true. Reset
+//    the downstream connection instead of emitting a terminal SSE error so
+//    ZCode can use its configured network retry attempts.
+async function testChatInvalidJsonFallbackRemainsRetryable() {
+  await withServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        message: "temporary upstream gateway error",
+        type: "server_error",
+        code: "overloaded",
+      },
+    }));
+  }, async (port) => {
+    const configuredUpstream = upstream(port);
+    const bridge = startBridge(configuredUpstream);
+    const bPort = await bridgePort(bridge);
+    try {
+      await assert.rejects(async () => {
+        const response = await fetch(`http://127.0.0.1:${bPort}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "test-model",
+            messages: [{ role: "user", content: "hi" }],
+            stream: true,
+          }),
+        });
+        await response.text();
+      }, "expected invalid non-SSE fallback to reject the downstream stream");
+      const health = await fetch(`http://127.0.0.1:${bPort}/health`);
+      assert.equal(health.status, 200);
+    } finally {
+      await closeBridge(bridge);
+    }
+  });
+}
+
+// 8. Chat path: non-stream (stream:false) behavior unchanged — fetch then sendJson.
 async function testChatNonStreamUnchanged() {
   await withServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -508,8 +580,10 @@ async function main() {
   console.log("testChatTransportFailureResetsDownstream passed");
   await testChatStreamErrorOnUpstream204();
   console.log("testChatStreamErrorOnUpstream204 passed");
-  await testChatStreamErrorOnUpstreamNonSse();
-  console.log("testChatStreamErrorOnUpstreamNonSse passed");
+  await testChatNormalizesJsonFallbackForStream();
+  console.log("testChatNormalizesJsonFallbackForStream passed");
+  await testChatInvalidJsonFallbackRemainsRetryable();
+  console.log("testChatInvalidJsonFallbackRemainsRetryable passed");
   await testChatNonStreamUnchanged();
   console.log("testChatNonStreamUnchanged passed");
   await testResponsesEmitsCreatedBeforeUpstream();
