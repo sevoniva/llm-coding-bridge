@@ -7,6 +7,7 @@ const {
   parseRetryAfter,
   safeErrorRecord,
 } = require("../lib/bridge-error");
+const { parseNonStreamChatResponse } = require("../lib/chat-compat");
 
 function classify(error, overrides = {}) {
   return classifyError(error, {
@@ -24,7 +25,14 @@ function testClassifierTable() {
     ["explicit client AbortError is cancelled", Object.assign(new Error("aborted"), { name: "AbortError", code: "CLIENT_CANCELLED" }), "cancelled", false, "request"],
     ["upstream timeout AbortError is timeout", Object.assign(new Error("aborted upstream"), { name: "AbortError", code: "UPSTREAM_TIMEOUT" }), "timeout", true, "model_route"],
     ["UND_ERR_CONNECT_TIMEOUT is timeout", Object.assign(new Error("timeout"), { code: "UND_ERR_CONNECT_TIMEOUT" }), "timeout", true, "model_route"],
+    ["Undici headers timeout is timeout", { code: "UND_ERR_HEADERS_TIMEOUT" }, "timeout", true, "model_route"],
+    ["Undici body timeout is timeout", { code: "UND_ERR_BODY_TIMEOUT" }, "timeout", true, "model_route"],
     ["ECONNRESET is network", Object.assign(new Error("reset"), { code: "ECONNRESET" }), "network", true, "model_route"],
+    ["Undici socket failures are network", { code: "UND_ERR_SOCKET" }, "network", true, "model_route"],
+    ["connection refused is network", { code: "ECONNREFUSED" }, "network", true, "model_route"],
+    ["broken pipe is network", { code: "EPIPE" }, "network", true, "model_route"],
+    ["network unreachable is network", { code: "ENETUNREACH" }, "network", true, "model_route"],
+    ["host unreachable is network", { code: "EHOSTUNREACH" }, "network", true, "model_route"],
     ["DNS errors are network", Object.assign(new Error("dns"), { code: "ENOTFOUND" }), "network", true, "model_route"],
     ["temporary DNS errors are network", Object.assign(new Error("dns"), { code: "EAI_AGAIN" }), "network", true, "model_route"],
     ["TLS errors are network", Object.assign(new Error("tls"), { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" }), "network", true, "model_route"],
@@ -33,6 +41,7 @@ function testClassifierTable() {
     ["nested connection reset is network", { code: "UPSTREAM_RESPONSE_FAILED", cause: Object.assign(new Error("nested reset secret"), { code: "ECONNRESET" }) }, "network", true, "model_route"],
     ["nested DNS errors are network", { code: "UPSTREAM_RESPONSE_FAILED", cause: Object.assign(new Error("nested dns secret"), { code: "ENOTFOUND" }) }, "network", true, "model_route"],
     ["nested TLS errors are network", { code: "UPSTREAM_RESPONSE_FAILED", cause: Object.assign(new Error("nested tls secret"), { code: "CERT_HAS_EXPIRED" }) }, "network", true, "model_route"],
+    ["outer network code survives unknown nested cause", { code: "ECONNRESET", cause: { code: "UNRECOGNIZED_CAUSE" } }, "network", true, "model_route"],
     ["HTTP 400 is invalid request", { status: 400 }, "invalid_request", false, "request"],
     ["HTTP 401 is auth", { status: 401 }, "auth", true, "credential"],
     ["HTTP 403 is auth", { status: 403 }, "auth", false, "credential"],
@@ -44,6 +53,9 @@ function testClassifierTable() {
     ["HTTP 503 is upstream 5xx", { status: 503 }, "upstream_5xx", true, "provider"],
     ["HTTP 504 is upstream 5xx", { status: 504 }, "upstream_5xx", true, "provider"],
     ["invalid HTTP 200 protocol data is protocol", { status: 200, code: "INVALID_UPSTREAM_PROTOCOL" }, "protocol", true, "model_route"],
+    ["non-SSE response is protocol", { code: "UPSTREAM_NON_SSE_RESPONSE" }, "protocol", true, "model_route"],
+    ["response limit is protocol", { code: "UPSTREAM_RESPONSE_TOO_LARGE" }, "protocol", true, "model_route"],
+    ["SSE event limit is protocol", { code: "UPSTREAM_SSE_EVENT_TOO_LARGE" }, "protocol", true, "model_route"],
     ["client cancellation is cancelled", { code: "CLIENT_CANCELLED" }, "cancelled", false, "request"],
     ["local configuration errors are local config", { code: "LOCAL_CONFIGURATION_ERROR" }, "local_config", false, "local_process"],
   ];
@@ -101,12 +113,41 @@ function testNestedCauseSerializationExcludesMessages() {
 function testRetryAfterParsing() {
   assert.equal(parseRetryAfter("2", 0), 2000);
   assert.equal(parseRetryAfter("Thu, 01 Jan 1970 00:00:03 GMT", 0), 3000);
-  assert.equal(parseRetryAfter("invalid", 0), undefined);
+  assert.equal(parseRetryAfter("Thursday, 01-Jan-70 00:00:03 GMT", 0), 3000);
+  assert.equal(parseRetryAfter("Thu Jan  1 00:00:03 1970", 0), 3000);
+  for (const value of ["2.5", "-1", Infinity, "9007199254741", "2099-01-01T00:00:00Z", "Thu, 01 Jan 1970 00:00:03 GMT trailing", "Thu, 29 Feb 2023 00:00:03 GMT", "Wed, 01 Jan 1970 00:00:03 GMT"]) {
+    assert.equal(parseRetryAfter(value, 0), undefined, String(value));
+  }
+  assert.equal(parseRetryAfter("Thu, 01 Jan 1970 00:00:03 GMT", 3000), undefined);
 }
 
 function testTimeoutRetryAfterPropagation() {
   const classified = classify({ status: 408, headers: { "retry-after": "3" } });
   assert.equal(classified.retryAfterMs, 3000);
+}
+
+function testExistingParserProtocolErrorClassification() {
+  assert.throws(
+    () => parseNonStreamChatResponse(`data: ${"x".repeat(128)}\n\n`, "text/event-stream", { maxSseEventBytes: 32 }),
+    (error) => classify(error).category === "protocol" && classify(error).retryable === true && classify(error).code === "UPSTREAM_SSE_EVENT_TOO_LARGE",
+  );
+  assert.equal(classify({ code: "UPSTREAM_NON_SSE_RESPONSE" }).code, "UPSTREAM_NON_SSE_RESPONSE");
+}
+
+function testSafeErrorRecordOwnFieldsOnly() {
+  assert.deepEqual(safeErrorRecord(null), {
+    name: "BridgeError", category: "network", phase: "unknown", retryable: false, scope: "model_route",
+  });
+  const prototype = {
+    category: "rate_limit", phase: "waiting_first_content", retryable: true, scope: "provider", status: 429, code: "LEAKED_CODE",
+  };
+  const polluted = Object.create(prototype);
+  assert.deepEqual(safeErrorRecord(polluted), {
+    name: "BridgeError", category: "network", phase: "unknown", retryable: false, scope: "model_route",
+  });
+  assert.deepEqual(safeErrorRecord({ category: "rate_limit", phase: "waiting_first_content", retryable: true, scope: "provider", status: 429, code: "UPSTREAM_HTTP_429" }), {
+    name: "BridgeError", category: "rate_limit", phase: "waiting_first_content", retryable: true, scope: "provider", status: 429, code: "UPSTREAM_HTTP_429",
+  });
 }
 
 testClassifierTable();
@@ -115,4 +156,6 @@ testSerializationExcludesRawErrorData();
 testNestedCauseSerializationExcludesMessages();
 testRetryAfterParsing();
 testTimeoutRetryAfterPropagation();
+testExistingParserProtocolErrorClassification();
+testSafeErrorRecordOwnFieldsOnly();
 console.log("bridge error tests passed");
