@@ -221,7 +221,7 @@ For a non-streaming request, the bridge also accepts an upstream response delive
 
 For OpenAI Chat Completions with `stream: true`, the bridge commits SSE headers immediately and emits a protocol-valid empty `chat.completion.chunk` after each idle `server.heartbeatIntervalMs` (default `15000`; `0` disables). The idle timer resets whenever a real upstream chunk arrives and continues for later gaps, so ZCode sees model data activity both before the first upstream byte and during long mid-stream pauses. Responses keeps its immediate `response.created` / `response.in_progress` events plus comment heartbeat, and Anthropic keeps its comment heartbeat while its upstream response is buffered.
 
-Closing a MacBook lid suspends the local bridge and normally breaks open TCP streams; no local process can keep executing while macOS is in clamshell sleep. After wake, an upstream Chat transport failure is exposed as a downstream connection failure so ZCode can apply its normal request retry policy. The bridge does not disable macOS sleep and does not replay a partially consumed request, which avoids duplicate model work or billing. An upstream HTTP response, empty body, or non-SSE streaming response is still reported as an in-stream SSE error followed by `data: [DONE]` because those are protocol responses rather than transport failures.
+Closing a MacBook lid suspends the local bridge and normally breaks open TCP streams; no local process can keep executing while macOS is in clamshell sleep. After wake, an upstream Chat transport failure is exposed as a downstream connection failure so ZCode can apply its normal request retry policy. The bridge does not disable macOS sleep and does not replay a partially consumed request, which avoids duplicate model work or billing. If an upstream intermittently ignores `stream: true` and returns a normal JSON chat completion, the bridge converts it to valid downstream SSE. An invalid or error-bearing HTTP 200 non-SSE body resets the connection so ZCode can retry; explicit upstream HTTP errors and empty responses remain protocol-level SSE errors.
 
 ## Run
 
@@ -554,7 +554,7 @@ bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-up
 
 OpenAI Chat Completions 的 `stream: true` 请求会立即提交 SSE 头；之后每次连续空闲达到 `server.heartbeatIntervalMs`（默认 `15000`；`0` 禁用）时，bridge 都会发送一个协议有效、`delta` 为空的 `chat.completion.chunk`。每收到一个真实上游数据块，空闲计时就重新开始，后续流中间再次长时间静默时仍会继续保活。因此 ZCode 在首字节前和长流中间都能看到模型数据事件。Responses 路径保留立即发送的 `response.created` / `response.in_progress` 事件及注释心跳；Anthropic 路径在等待完整上游响应时保留注释心跳。
 
-MacBook 盒盖会挂起本地 bridge，并通常使已打开的 TCP 流失效；macOS 进入 clamshell sleep 后，本地进程本身无法继续执行。唤醒后，如果 Chat 上游发生传输错误，bridge 会把它作为下游连接失败暴露给 ZCode，使 ZCode 能执行自身的请求重试策略。bridge 不会阻止 macOS 睡眠，也不会自行重放已经部分消费的请求，以免造成重复模型计算或计费。上游明确返回 HTTP 错误、空正文或非 SSE 流式正文时，仍会按协议返回流内 SSE 错误和 `data: [DONE]`，因为这些属于上游协议响应，不是网络传输中断。
+MacBook 盒盖会挂起本地 bridge，并通常使已打开的 TCP 流失效；macOS 进入 clamshell sleep 后，本地进程本身无法继续执行。唤醒后，如果 Chat 上游发生传输错误，bridge 会把它作为下游连接失败暴露给 ZCode，使 ZCode 能执行自身的请求重试策略。bridge 不会阻止 macOS 睡眠，也不会自行重放已经部分消费的请求，以免造成重复模型计算或计费。若上游偶发忽略 `stream: true` 并返回普通 JSON chat completion，bridge 会将其转换为合法的下游 SSE；若 HTTP 200 的非 SSE 正文是错误或无效结构，则重置连接让 ZCode 重试。上游明确返回 HTTP 错误或空正文时，仍按协议返回流内 SSE 错误。
 
 ## Security
 

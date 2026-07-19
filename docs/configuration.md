@@ -348,7 +348,7 @@ Set `heartbeatIntervalMs` to `0` to disable the heartbeat entirely.
 
 Clamshell sleep suspends the local bridge and normally invalidates open TCP streams; the bridge cannot continue executing while macOS is asleep. After wake, a Chat upstream transport failure resets the downstream connection instead of emitting a terminal `upstream_error` + `[DONE]`, allowing ZCode to classify it as a network failure and apply its normal retry policy. The bridge neither disables sleep nor replays a partially consumed request, avoiding duplicate model work or billing.
 
-On the Chat Completions path, an upstream HTTP error, non-SSE body (e.g. `application/json`), or empty body (e.g. `204 No Content`) is still reported as an in-stream SSE error followed by `data: [DONE]`. Those are valid upstream protocol responses rather than transport failures, and the response has already been committed to `text/event-stream`.
+On the Chat Completions path, a successful non-SSE JSON chat completion is converted to one valid completion chunk, an optional usage chunk, and `data: [DONE]`. This covers upstreams that intermittently ignore `stream: true` during a long agent turn. If a HTTP 200 non-SSE body contains an error or cannot be parsed as a chat completion, the bridge logs only safe error codes and resets the downstream connection so ZCode can apply its network retry policy. Explicit upstream HTTP errors and empty bodies (for example `204 No Content`) remain in-stream SSE errors because the response has already been committed to `text/event-stream`.
 
 ## 4. Validate
 
@@ -1033,7 +1033,7 @@ Responses 路径保留立即发送的 `response.created` / `response.in_progress
 
 MacBook 盒盖睡眠会挂起本地 bridge，并通常使已打开的 TCP 流失效；macOS 睡眠期间 bridge 无法继续执行。唤醒后，如果 Chat 上游发生传输错误，bridge 会重置下游连接，而不是发送终止性的 `upstream_error` + `[DONE]`，从而让 ZCode 将其识别为网络故障并执行自身的正常重试策略。bridge 不会禁用系统睡眠，也不会自行重放已部分消费的请求，以免造成重复模型计算或计费。
 
-上游明确返回 HTTP 错误、非 SSE 正文（如 `application/json`）或空正文（如 `204 No Content`）时，Chat 路径仍会返回流内 SSE 错误和 `data: [DONE]`。这些属于有效的上游协议响应，不是传输中断，而且下游已经提交为 `text/event-stream`。
+Chat 路径收到成功的非 SSE JSON chat completion 时，会将其转换为一个合法 completion chunk、可选 usage chunk 和 `data: [DONE]`，用于兼容长任务过程中偶发忽略 `stream: true` 的上游。若 HTTP 200 的非 SSE 正文包含错误，或无法解析为 chat completion，bridge 只记录安全的错误代码并重置下游连接，让 ZCode 执行网络重试。上游明确返回 HTTP 错误或空正文（如 `204 No Content`）时，仍返回流内 SSE 错误，因为下游已经提交为 `text/event-stream`。
 
 ## 4. 检测和启动
 
