@@ -238,7 +238,35 @@ async function testChatHeartbeatContinuesDuringMidStreamIdle() {
   });
 }
 
-// 4. Chat path: upstream 204 (no body) on a stream:true request → bridge emits
+// 4. Chat path: an upstream transport reset must remain a downstream network
+//    failure so clients such as ZCode can apply their retry policy.
+async function testChatTransportFailureResetsDownstream() {
+  await withServer((req) => req.socket.destroy(), async (port) => {
+    const configuredUpstream = upstream(port);
+    const bridge = startBridge(configuredUpstream, { heartbeatIntervalMs: 100 });
+    const bPort = await bridgePort(bridge);
+    try {
+      await assert.rejects(async () => {
+        const response = await fetch(`http://127.0.0.1:${bPort}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "test-model",
+            messages: [{ role: "user", content: "hi" }],
+            stream: true,
+          }),
+        });
+        await response.text();
+      }, "expected upstream reset to reject the downstream stream");
+      const health = await fetch(`http://127.0.0.1:${bPort}/health`);
+      assert.equal(health.status, 200);
+    } finally {
+      await closeBridge(bridge);
+    }
+  });
+}
+
+// 5. Chat path: upstream 204 (no body) on a stream:true request → bridge emits
 //    HTTP 200 + SSE error data frame + [DONE] (NOT 502 JSON).
 async function testChatStreamErrorOnUpstream204() {
   await withServer((_req, res) => {
@@ -476,6 +504,8 @@ async function main() {
   console.log("testChatEmitsHeadersBeforeUpstream passed");
   await testChatHeartbeatContinuesDuringMidStreamIdle();
   console.log("testChatHeartbeatContinuesDuringMidStreamIdle passed");
+  await testChatTransportFailureResetsDownstream();
+  console.log("testChatTransportFailureResetsDownstream passed");
   await testChatStreamErrorOnUpstream204();
   console.log("testChatStreamErrorOnUpstream204 passed");
   await testChatStreamErrorOnUpstreamNonSse();
