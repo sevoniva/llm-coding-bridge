@@ -15,6 +15,12 @@ function waitingState() {
   return state;
 }
 
+function streamingState() {
+  const state = waitingState();
+  state.observeChatData(chatData({ content: "started" }));
+  return state;
+}
+
 function testInitialStateAndNormalSuccessPath() {
   const state = createRequestState({ requestId: "req-1", model: "coding-fast", now: () => 1000 });
   assert.equal(state.phase, "accepted");
@@ -23,7 +29,7 @@ function testInitialStateAndNormalSuccessPath() {
   assert.equal(state.model, "coding-fast");
   state.transition("connecting");
   state.transition("waiting_first_content");
-  state.transition("streaming");
+  state.observeChatData(chatData({ content: "started" }));
   state.transition("completed");
   assert.equal(state.phase, "completed");
 }
@@ -31,26 +37,29 @@ function testInitialStateAndNormalSuccessPath() {
 function testTerminalExitsAndIllegalTransitions() {
   for (const phase of ["accepted", "connecting", "waiting_first_content", "streaming"]) {
     for (const terminal of ["failed", "cancelled"]) {
-      const state = createRequestState({ requestId: "req-1", model: "coding-fast" });
-      while (state.phase !== phase) {
-        state.transition({ accepted: "connecting", connecting: "waiting_first_content", waiting_first_content: "streaming" }[state.phase]);
-      }
+      const state = phase === "streaming" ? streamingState() : createRequestState({ requestId: "req-1", model: "coding-fast" });
+      while (state.phase !== phase) state.transition({ accepted: "connecting", connecting: "waiting_first_content" }[state.phase]);
       state.transition(terminal);
       assert.equal(state.phase, terminal, `${phase} -> ${terminal}`);
     }
   }
 
   const state = waitingState();
-  for (const target of ["accepted", "waiting_first_content", "completed"]) {
-    assert.throws(() => state.transition(target), BridgeError, `waiting_first_content -> ${target}`);
-  }
+  for (const target of ["accepted", "waiting_first_content", "completed"]) assert.throws(() => state.transition(target), BridgeError, `waiting_first_content -> ${target}`);
+  let streamingError;
+  assert.throws(() => state.transition("streaming"), (caught) => {
+    streamingError = caught;
+    return caught instanceof BridgeError && caught.category === "local_config" && caught.code === "INVALID_REQUEST_STATE_TRANSITION";
+  });
+  const serializedStreamingError = JSON.parse(JSON.stringify(streamingError));
+  assert.equal(Object.hasOwn(serializedStreamingError, "requestId"), false);
+  assert.equal(Object.hasOwn(serializedStreamingError, "model"), false);
   state.transition("failed");
   assert.throws(() => state.transition("cancelled"), BridgeError);
   const cancelled = createRequestState({ requestId: "req-1", model: "coding-fast" });
   cancelled.transition("cancelled");
   assert.throws(() => cancelled.transition("failed"), BridgeError);
-  const completed = waitingState();
-  completed.transition("streaming");
+  const completed = streamingState();
   completed.transition("completed");
   assert.throws(() => completed.transition("failed"), BridgeError);
 
@@ -61,6 +70,63 @@ function testTerminalExitsAndIllegalTransitions() {
     return caught instanceof BridgeError && caught.category === "local_config" && caught.code === "INVALID_REQUEST_STATE_TRANSITION";
   });
   assert.doesNotMatch(JSON.stringify(error), /streaming-secret|x{20}/);
+}
+
+function testTransitionTableRejectsEverySkippedBackwardAndTerminalTransition() {
+  const phases = ["accepted", "connecting", "waiting_first_content", "streaming", "completed", "failed", "cancelled"];
+  const directTargets = {
+    accepted: new Set(["connecting", "failed", "cancelled"]),
+    connecting: new Set(["waiting_first_content", "failed", "cancelled"]),
+    waiting_first_content: new Set(["failed", "cancelled"]),
+    streaming: new Set(["completed", "failed", "cancelled"]),
+    completed: new Set(), failed: new Set(), cancelled: new Set(),
+  };
+  const stateFor = {
+    accepted: () => createRequestState({ requestId: "req-1", model: "coding-fast" }),
+    connecting: () => { const state = createRequestState({ requestId: "req-1", model: "coding-fast" }); state.transition("connecting"); return state; },
+    waiting_first_content: waitingState,
+    streaming: streamingState,
+    completed: () => { const state = streamingState(); state.transition("completed"); return state; },
+    failed: () => { const state = createRequestState({ requestId: "req-1", model: "coding-fast" }); state.transition("failed"); return state; },
+    cancelled: () => { const state = createRequestState({ requestId: "req-1", model: "coding-fast" }); state.transition("cancelled"); return state; },
+  };
+  for (const phase of phases) {
+    for (const target of phases) {
+      if (directTargets[phase].has(target)) continue;
+      assert.throws(() => stateFor[phase]().transition(target), BridgeError, `${phase} -> ${target}`);
+    }
+  }
+}
+
+function testConstructorSafelySnapshotsOnlyValidOwnPrimitiveOptions() {
+  const state = createRequestState({ requestId: "req-1", model: "coding-fast" });
+  assert.equal(state.requestId, "req-1");
+  assert.equal(state.model, "coding-fast");
+  const inherited = Object.create({ requestId: "inherited-secret" });
+  inherited.model = "coding-fast";
+  let inheritedError;
+  assert.throws(() => createRequestState(inherited), (caught) => {
+    inheritedError = caught;
+    return caught instanceof BridgeError && caught.category === "local_config" && caught.code === "INVALID_REQUEST_STATE_OPTIONS";
+  });
+  assert.doesNotMatch(JSON.stringify(inheritedError), /inherited-secret/);
+
+  const cases = [
+    [null, /null/],
+    [{ requestId: { private: "object-secret" } }, /object-secret/],
+    [{ requestId: `unsafe secret ${"x".repeat(200)}` }, /unsafe secret|x{20}/],
+    [{ model: `m${"x".repeat(160)}` }, /x{20}/],
+    [Object.defineProperty({}, "requestId", { get() { throw new Error("getter-secret"); } }), /getter-secret/],
+    [new Proxy({}, { getOwnPropertyDescriptor() { throw new Error("proxy-secret"); } }), /proxy-secret/],
+  ];
+  for (const [options, secret] of cases) {
+    let error;
+    assert.throws(() => createRequestState(options), (caught) => {
+      error = caught;
+      return caught instanceof BridgeError && caught.category === "local_config" && caught.code === "INVALID_REQUEST_STATE_OPTIONS";
+    });
+    assert.doesNotMatch(JSON.stringify(error), secret);
+  }
 }
 
 function testAttemptsAndHeartbeatsAreMonotonic() {
@@ -108,6 +174,17 @@ function testSemanticChatDataStartsStreaming() {
   }
 }
 
+function testSemanticContentAcrossAllChoicesAndToolCalls() {
+  for (const delta of [
+    [{ delta: { role: "assistant" } }, { delta: { content: "later choice" } }],
+    [{ delta: { tool_calls: [{ function: {} }, { function: { arguments: "{" } }] } }],
+  ]) {
+    const state = waitingState();
+    assert.equal(state.observeChatData(JSON.stringify({ choices: delta })), true);
+    assert.equal(state.phase, "streaming");
+  }
+}
+
 function testOnlyNonEmptySemanticStringsCount() {
   const state = waitingState();
   assert.equal(state.observeChatData(chatData({
@@ -131,11 +208,23 @@ function testChatDataCannotMutateInactiveOrTerminalState() {
   assert.equal(state.semanticContentStarted, false);
 }
 
+function testObserveChatDataRejectsNonStringWithoutCoercion() {
+  const state = waitingState();
+  const data = new Proxy({}, { get() { throw new Error("input-secret"); } });
+  for (const value of [null, 1, {}, data]) assert.equal(state.observeChatData(value), false);
+  assert.equal(state.phase, "waiting_first_content");
+  assert.equal(state.semanticContentStarted, false);
+}
+
 testInitialStateAndNormalSuccessPath();
 testTerminalExitsAndIllegalTransitions();
+testTransitionTableRejectsEverySkippedBackwardAndTerminalTransition();
+testConstructorSafelySnapshotsOnlyValidOwnPrimitiveOptions();
 testAttemptsAndHeartbeatsAreMonotonic();
 testNonSemanticChatDataDoesNotStartStreaming();
 testSemanticChatDataStartsStreaming();
+testSemanticContentAcrossAllChoicesAndToolCalls();
 testOnlyNonEmptySemanticStringsCount();
 testChatDataCannotMutateInactiveOrTerminalState();
+testObserveChatDataRejectsNonStringWithoutCoercion();
 console.log("request-state tests passed");
