@@ -24,7 +24,7 @@
     "secretlint": "secretlint \"**/*\" --secretlintrc .secretlintrc.json --secretlintignore .secretlintignore",
     "repo:gate": "node scripts/repo-gate.js",
     "sca": "npm audit --audit-level=high --registry=https://registry.npmjs.org",
-    "test": "node test/bridge-error.test.js && node test/chat-compat.test.js && node test/client-setup.test.js && node test/config-v2.test.js && node test/request-state.test.js && node test/security-files.test.js && node test/request-log.test.js && node test/event-store.test.js && node test/security-http.test.js && node test/streaming-keepalive.test.js && node test/repo-gate.test.js && node test/smoke.js",
+    "test": "node test/bridge-error.test.js && node test/chat-compat.test.js && node test/client-setup.test.js && node test/config-v2.test.js && node test/request-state.test.js && node test/retry-policy.test.js && node test/security-files.test.js && node test/request-log.test.js && node test/event-store.test.js && node test/security-http.test.js && node test/streaming-keepalive.test.js && node test/repo-gate.test.js && node test/smoke.js",
     "pack:check": "npm pack --dry-run"
   },
   "engines": {
