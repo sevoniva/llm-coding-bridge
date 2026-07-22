@@ -7,6 +7,7 @@ const path = require("node:path");
 const { buildAdminStatus } = require("../lib/admin-status");
 const { createAdminHandler, isLoopbackPeer } = require("../lib/admin");
 const { probeModel, probeAllModels } = require("../lib/doctor");
+const { startServer } = require("../lib/server");
 const { zcodeVerificationStatus } = require("../lib/zcode-client");
 
 const credentialReferences = [];
@@ -118,6 +119,30 @@ const unavailable = buildAdminStatus({
 assert.equal(unavailable.uptimeMs, 0);
 assert.equal(unavailable.routes[0].credentialAvailable, false);
 assert.equal(unavailable.routes[0].health, "closed");
+
+const legacy = buildAdminStatus({
+  config: {
+    routes: [
+      { alias: "org/legacy-env", apiKeyEnv: "LEGACY_AVAILABLE" },
+      { alias: "legacy-command", apiKeyCommand: { command: "/usr/bin/printf", args: [] } },
+      { alias: "legacy-client", apiKeySource: "client" },
+      { alias: "legacy-missing", apiKeyEnv: "LEGACY_MISSING" },
+    ],
+  },
+  healthRegistry: { snapshot: () => [] },
+}, {
+  version: "0.7.0",
+  startedAt: 1000,
+  now: () => 2000,
+  env: { LEGACY_AVAILABLE: "legacy-secret" },
+});
+assert.deepEqual(legacy.routes.map((route) => [route.alias, route.credentialAvailable]), [
+  ["org/legacy-env", true],
+  ["legacy-command", true],
+  ["legacy-client", true],
+  ["legacy-missing", false],
+]);
+assert.doesNotMatch(JSON.stringify(legacy), /legacy-secret|LEGACY_AVAILABLE/);
 
 function adminRequest({
   method = "GET",
@@ -499,7 +524,117 @@ async function testDoctorActions() {
   assert.doesNotMatch(JSON.stringify(actionEvents), /response-secret|credential-secret/);
 }
 
-Promise.all([testAdminBoundary(), testDoctorActions()])
+async function closeServer(server) {
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+async function testLiveTimelineIntegration() {
+  let attempts = 0;
+  const upstream = http.createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      attempts += 1;
+      const payload = JSON.parse(body);
+      assert.equal(payload.model, "provider-model-id-e2e");
+      assert.equal(req.headers.authorization, "Bearer admin-e2e-key");
+      if (attempts === 1) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "provider-response-secret" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl-admin-e2e",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content: "semantic-output-secret" } }],
+        })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      }, 80);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", resolve);
+  });
+
+  const previousKey = process.env.ADMIN_CONSOLE_E2E_KEY;
+  process.env.ADMIN_CONSOLE_E2E_KEY = "admin-e2e-key";
+  const route = {
+    alias: "coding-e2e",
+    model: "provider-model-id-e2e",
+    upstreamModel: "provider-model-id-e2e",
+    baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
+    apiKeyEnv: "ADMIN_CONSOLE_E2E_KEY",
+    timeoutMs: 2000,
+    maxResponseBytes: 1024 * 1024,
+    maxSseEventBytes: 64 * 1024,
+  };
+  const bridge = startServer({
+    path: "/tmp/admin-e2e-config.json",
+    version: 1,
+    server: { host: "127.0.0.1", port: 0, heartbeatIntervalMs: 20 },
+    routes: [route],
+    upstreams: [route],
+    defaultUpstream: route,
+  });
+  await new Promise((resolve, reject) => {
+    bridge.once("error", reject);
+    if (bridge.listening) resolve();
+    else bridge.once("listening", resolve);
+  });
+
+  try {
+    const baseUrl = `http://127.0.0.1:${bridge.address().port}`;
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "coding-e2e",
+        stream: true,
+        messages: [{ role: "user", content: "prompt-secret" }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const output = await response.text();
+    assert.match(output, /semantic-output-secret/);
+    assert.equal(attempts, 2);
+
+    const statusResponse = await fetch(`${baseUrl}/admin/api/status`);
+    assert.equal(statusResponse.status, 200);
+    const status = await statusResponse.json();
+    assert.equal(status.routes[0].alias, "coding-e2e");
+    assert.equal(status.routes[0].health, "closed");
+
+    const eventsResponse = await fetch(`${baseUrl}/admin/api/events?afterSequence=0&limit=500`);
+    assert.equal(eventsResponse.status, 200);
+    const timeline = await eventsResponse.json();
+    const events = timeline.events;
+    assert.equal(events.filter((event) => event.type === "attempt_start").length, 2);
+    assert.equal(events.some((event) => event.type === "attempt_failure" && event.status === 503), true);
+    assert.equal(events.some((event) => event.type === "retry_scheduled" && Number.isSafeInteger(event.delayMs)), true);
+    assert.equal(events.some((event) => event.type === "heartbeat" && event.heartbeatCount >= 1), true);
+    assert.equal(events.some((event) => event.type === "attempt_success" && event.attempt === 2), true);
+    assert.equal(events.some((event) => event.phase === "request_complete"), true);
+    assert.ok(timeline.nextSequence >= events.at(-1).sequence);
+
+    const serialized = JSON.stringify({ status, timeline });
+    assert.doesNotMatch(serialized, /prompt-secret|semantic-output-secret|provider-response-secret|admin-e2e-key|provider-model-id-e2e|127\.0\.0\.1:\d+\/v1/);
+
+    const incremental = await fetch(`${baseUrl}/admin/api/events?afterSequence=${timeline.nextSequence}&limit=10`);
+    assert.deepEqual(await incremental.json(), { events: [], nextSequence: timeline.nextSequence });
+  } finally {
+    await closeServer(bridge);
+    await closeServer(upstream);
+    if (previousKey === undefined) delete process.env.ADMIN_CONSOLE_E2E_KEY;
+    else process.env.ADMIN_CONSOLE_E2E_KEY = previousKey;
+  }
+}
+
+Promise.all([testAdminBoundary(), testDoctorActions(), testLiveTimelineIntegration()])
   .then(() => console.log("admin tests passed"))
   .catch((error) => {
     console.error(error);

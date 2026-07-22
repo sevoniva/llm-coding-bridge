@@ -26,6 +26,7 @@ assert.equal(opened.health, "open");
 assert.equal(opened.cooldownUntil, 31000);
 
 assert.equal(registry.acquire("coding-strong", now).allowed, true);
+assert.equal(registry.acquire("org/legacy:model", now).allowed, true);
 assert.deepEqual(registry.acquire("coding-fast", 30000), {
   allowed: false,
   health: "open",
@@ -93,6 +94,7 @@ assert.equal(Object.isFrozen(snapshot[0]), true);
 assert.deepEqual(snapshot.map(({ alias, health }) => ({ alias, health })), [
   { alias: "coding-fast", health: "half_open" },
   { alias: "coding-strong", health: "closed" },
+  { alias: "org/legacy:model", health: "closed" },
 ]);
 
 assert.throws(() => registry.acquire("", now), /alias/i);
