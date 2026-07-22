@@ -5,16 +5,25 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
+const { spawnSync } = require("node:child_process");
 
 const { parseCliArgs } = require("../lib/cli-args");
 const { loadConfig, isLoopbackHost } = require("../lib/config");
 const { applyMigrationPlan, effectiveConfigDocument, migrationPlan } = require("../lib/config-output");
 const { startServer } = require("../lib/server");
-const { doctor, status } = require("../lib/doctor");
+const { doctor, probeAllModels, probeModel, status } = require("../lib/doctor");
 const { createCodexProfile } = require("../lib/codex-profile");
 const { configureClaudeCode, configureCodexDesktop, manualClaude, manualCodexCli, manualCodexDesktop, manualSetup } = require("../lib/client-setup");
 const { readFileSnapshot, writePrivateFile } = require("../lib/file-safety");
 const { installService, restartService, uninstallService } = require("../lib/service");
+const { loadSetupProfile, runGuidedSetup, runSetup } = require("../lib/setup");
+const {
+  applyZcodePlan,
+  applyZcodeRollback,
+  detectZcodeState,
+  planZcodeChange,
+  planZcodeRollback,
+} = require("../lib/zcode-client");
 
 const CWD_CONFIG = "llm-coding-bridge.config.json";
 
@@ -38,7 +47,7 @@ function withCliDefaults(parsed) {
 
 function usage() {
   return `Usage:
-  llm-coding-bridge setup [--profile <file>] [--advanced]
+  llm-coding-bridge setup [--profile <file>] [--advanced] [--yes]
   llm-coding-bridge config show --effective [--config <file>]
   llm-coding-bridge config migrate [--dry-run] [--config <file>]
   llm-coding-bridge client add zcode [--dry-run]
@@ -338,6 +347,117 @@ async function configCommand(args) {
   console.log(`[OK] backup ${result.backup}`);
 }
 
+function printProbe(result) {
+  console.log(`[${result.ok ? "OK" : "FAIL"}] ${result.alias} ${result.category}/${result.code} ${result.elapsedMs}ms`);
+  if (!result.ok) process.exitCode = 1;
+}
+
+async function doctorCommand(args) {
+  const config = loadConfig(args.config);
+  if (args.model) {
+    printProbe(await probeModel(config, args.model));
+    return;
+  }
+  if (args.allModels) {
+    for (const result of await probeAllModels(config)) printProbe(result);
+    return;
+  }
+  return doctor(config, args.deep, args.tools);
+}
+
+async function setupCommand(args) {
+  let result;
+  if (args.profile) {
+    const profile = loadSetupProfile(args.profile);
+    if (profile.clients.includes("zcode") && !args.yes) {
+      throw new Error("Non-interactive ZCode setup requires --yes.");
+    }
+    result = await runSetup(profile, {
+      home: args.home,
+      configPath: homeConfigPath(args.home),
+    });
+  } else {
+    result = await runGuidedSetup({
+      home: args.home,
+      configPath: homeConfigPath(args.home),
+      advanced: args.advanced,
+    });
+  }
+  console.log(`[OK] setup complete: ${result.configFile}`);
+  console.log(`[OK] aliases configured: ${result.aliases.length}`);
+  if (result.zcode) console.log(`[OK] ZCode ${result.zcode.changed ? "updated" : "already current"}`);
+  for (const probe of result.probes) printProbe(probe);
+}
+
+function zcodeRunning() {
+  if (process.platform !== "darwin") return false;
+  const result = spawnSync("/usr/bin/pgrep", ["-x", "ZCode"], { stdio: "ignore", shell: false, timeout: 3000 });
+  return result.status === 0;
+}
+
+function stopZcode() {
+  const result = spawnSync("/usr/bin/osascript", ["-e", "tell application \"ZCode\" to quit"], {
+    stdio: "ignore",
+    shell: false,
+    timeout: 10000,
+  });
+  if (result.status !== 0) throw new Error("ZCode could not be stopped safely.");
+}
+
+function startZcode() {
+  const result = spawnSync("/usr/bin/open", ["-a", "ZCode"], { stdio: "ignore", shell: false, timeout: 10000 });
+  if (result.status !== 0) throw new Error("ZCode could not be restarted.");
+}
+
+async function mutationConfirmed(args, question) {
+  if (args.yes) return true;
+  if (!process.stdin.isTTY) throw new Error("Non-interactive client changes require --yes.");
+  const prompt = createPrompt();
+  try {
+    return confirm(prompt, question);
+  } finally {
+    prompt.close();
+  }
+}
+
+async function clientCommand(args) {
+  const detected = detectZcodeState({ home: args.home });
+  let plan;
+  if (args.action === "rollback") {
+    plan = planZcodeRollback({ home: args.home, state: detected, backup: args.backup });
+  } else {
+    const config = args.action === "add" ? loadConfig(args.config) : null;
+    plan = planZcodeChange({ action: args.action, config, home: args.home, state: detected });
+  }
+  if (args.dryRun) {
+    console.log(JSON.stringify(plan.preview, null, 2));
+    return;
+  }
+  if (plan.previewOnly) throw new Error(`ZCode change is preview-only: ${plan.warnings.join(" ")}`);
+  if (plan.noChange) {
+    console.log("[OK] ZCode already current");
+    return;
+  }
+  if (!await mutationConfirmed(args, "Apply the planned ZCode change? / 应用 ZCode 配置变更？[y/N]: ")) {
+    throw new Error("ZCode change was not confirmed.");
+  }
+
+  const wasRunning = zcodeRunning();
+  let restart = args.restartZcode === true;
+  if (wasRunning && process.stdin.isTTY && !restart) {
+    restart = await mutationConfirmed({ ...args, yes: false }, "ZCode is running. Quit and restart it around this change? / ZCode 正在运行，是否退出并重启？[y/N]: ");
+    if (!restart) throw new Error("ZCode change was not confirmed while the app is running.");
+  }
+  if (restart && wasRunning) stopZcode();
+  try {
+    const result = args.action === "rollback" ? applyZcodeRollback(plan) : applyZcodePlan(plan);
+    console.log(`[OK] ZCode ${args.action}: ${result.changed ? "changed" : "already current"}`);
+    if (result.backup) console.log(`[OK] backup ${result.backup}`);
+  } finally {
+    if (restart) startZcode();
+  }
+}
+
 async function main() {
   const args = withCliDefaults(parseCliArgs(process.argv.slice(2)));
   if (args.help || args.command === "help") {
@@ -345,9 +465,11 @@ async function main() {
     return;
   }
   if (args.command === "template") return printTemplate(args.template || "codex");
+  if (args.command === "setup") return setupCommand(args);
   if (args.command === "config") return configCommand(args);
+  if (args.command === "client") return clientCommand(args);
   if (args.command === "init") return initConfig(args.out, args.doctor, args.home);
-  if (args.command === "doctor") return doctor(loadConfig(args.config), args.deep, args.tools);
+  if (args.command === "doctor") return doctorCommand(args);
   if (args.command === "status") return status(loadConfig(args.config));
   if (args.command === "codex-profile") return createCodexProfile(loadConfig(args.config), args.name, args.home, args.force);
   if (args.command === "logs") return printLogs(args.home, args.lines);

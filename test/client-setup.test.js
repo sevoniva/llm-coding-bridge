@@ -22,6 +22,35 @@ function testConfig(localToken) {
   };
 }
 
+function v2Config() {
+  const routes = [
+    {
+      alias: "coding-fast",
+      model: "provider-model-id-a",
+      upstreamModel: "provider-model-id-a",
+      name: "Provider A",
+      capabilities: { contextWindow: 131072, inputModalities: ["text", "image"], reasoning: true },
+      credential: { source: "env", env: "MODEL_A_KEY" },
+    },
+    {
+      alias: "coding-strong",
+      model: "provider-model-id-b",
+      upstreamModel: "provider-model-id-b",
+      name: "Provider A",
+      capabilities: { contextWindow: 200000, inputModalities: ["text"], reasoning: true },
+      credential: { source: "env", env: "MODEL_B_KEY" },
+    },
+  ];
+  return {
+    path: "/tmp/v2-bridge.config.json",
+    version: 2,
+    server: { host: "127.0.0.1", port: 37629, localToken: "client-token" },
+    routes,
+    upstreams: routes,
+    defaultUpstream: routes[0],
+  };
+}
+
 function runCli(cli, args, input = "", env = {}) {
   const child = spawn(process.execPath, [cli, ...args], {
     env: { ...process.env, ...env },
@@ -82,6 +111,20 @@ async function main() {
   assert.match(desktopText, /model_catalog_json = /);
   assert.match(desktopText, /notify = true/);
   assert.match(desktopText, /\[tools\]\nweb = true/);
+
+  const v2Home = tmpHome("v2-clients");
+  const v2Claude = configureClaudeCode(v2Config(), v2Home);
+  const v2ClaudeSettings = JSON.parse(fs.readFileSync(v2Claude.file, "utf8"));
+  assert.equal(v2ClaudeSettings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "coding-fast");
+  assert.doesNotMatch(JSON.stringify(v2ClaudeSettings), /provider-model-id-a|provider-model-id-b/);
+  const v2Desktop = configureCodexDesktop(v2Config(), v2Home);
+  const v2DesktopText = fs.readFileSync(v2Desktop.file, "utf8");
+  assert.match(v2DesktopText, /model = "coding-fast"/);
+  assert.doesNotMatch(v2DesktopText, /provider-model-id-a|provider-model-id-b/);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(v2Desktop.catalogPath, "utf8")).models.map((model) => model.slug),
+    ["coding-fast", "coding-strong"]
+  );
 
   const cliHome = tmpHome("cli");
   const cli = path.join(__dirname, "..", "bin", "llm-coding-bridge.js");
