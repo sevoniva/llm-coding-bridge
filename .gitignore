@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 coverage/
 dist/
+.artifacts/
 *.log
 bridge.config.json
 llm-coding-bridge.config.json
