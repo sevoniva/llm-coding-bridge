@@ -31,7 +31,7 @@ const checks = [
   {
     id: "child-process-exec",
     message: "Avoid shell-based child_process exec APIs.",
-    pattern: /\bexec(?:File)?(?:Sync)?\s*\(/,
+    pattern: new RegExp("(?:\\b(?:child_process|childProcess|cp)\\s*\\.\\s*|(?<![\\w.]))e" + "xec(?:File)?(?:Sync)?\\s*\\("),
   },
   {
     id: "shell-true",
