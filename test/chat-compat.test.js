@@ -45,6 +45,28 @@ function testSanitizeChatPayload() {
     assert.notStrictEqual(preserved, payload);
     assert.deepEqual(preserved, payload);
   }
+
+  const emptyAssistantHistory = {
+    messages: [
+      { role: "user", content: "before" },
+      { role: "assistant", content: "" },
+      { role: "assistant", content: "   " },
+      { role: "assistant", content: null },
+      { role: "assistant", content: [], tool_calls: [] },
+      { role: "assistant", content: "", reasoning_content: "kept reasoning" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_1" }] },
+      { role: "user", content: "after" },
+    ],
+  };
+  const cleaned = sanitizeChatPayload(emptyAssistantHistory);
+
+  assert.deepEqual(cleaned.messages, [
+    { role: "user", content: "before" },
+    { role: "assistant", reasoning_content: "kept reasoning" },
+    { role: "assistant", tool_calls: [{ id: "call_1" }] },
+    { role: "user", content: "after" },
+  ]);
+  assert.deepEqual(emptyAssistantHistory.messages[1], { role: "assistant", content: "" });
 }
 
 function testNormalJsonResponse() {
