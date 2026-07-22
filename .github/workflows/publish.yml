@@ -9,6 +9,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -16,28 +20,32 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
       - run: npm ci
-      - run: npm run lint
-      - run: npm run security:scan
-      - run: npm run secretlint
-      - run: npm run repo:gate
-      - run: npm run sca
-      - run: npm test
-      - name: Skip if version already published
-        id: skip_check
+      - name: Verify tag matches package version
         run: |
+          set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          if npm view "@sevoniva/llm-coding-bridge@$VERSION" version >/dev/null 2>&1; then
-            echo "Version $VERSION is already on npm. Skipping publish."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+      - run: npm run verify
+      - run: npm run release:gate -- --release --tag "$GITHUB_REF_NAME"
+      - run: npm pack --dry-run
+      - name: Check published version
+        id: published
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@sevoniva/llm-coding-bridge@$VERSION" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Version $VERSION not on npm. Will publish."
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.skip_check.outputs.skip == 'false'
-        run: npm publish --provenance
+      - if: steps.published.outputs.exists == 'false'
+        run: npm publish --provenance --access public --registry=https://registry.npmjs.org/
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -10,19 +10,35 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  compatibility:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  fast-gate:
+    name: Fast release gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           package-manager-cache: false
       - run: npm ci
-      - run: npm run lint
-      - run: npm run security:scan
-      - run: npm run secretlint
-      - run: npm run repo:gate
-      - run: npm run sca
-      - run: npm test
-      - run: npm run pack:check
+      - run: npm run verify

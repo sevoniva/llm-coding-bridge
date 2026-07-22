@@ -13,6 +13,7 @@
     "lib",
     "docs/configuration.md",
     "scripts",
+    "test/helpers/fake-multimodel-upstream.js",
     "templates",
     ".secretlintrc.json",
     ".secretlintignore",
@@ -24,10 +25,12 @@
     "security:scan": "node scripts/security-scan.js",
     "secretlint": "secretlint \"**/*\" --secretlintrc .secretlintrc.json --secretlintignore .secretlintignore",
     "repo:gate": "node scripts/repo-gate.js",
+    "release:gate": "node scripts/release-gate.js",
     "sca": "npm audit --audit-level=high --registry=https://registry.npmjs.org",
-    "test": "node test/cli-args.test.js && node test/config-output.test.js && node test/credential-store.test.js && node test/setup.test.js && node test/bridge-error.test.js && node test/chat-compat.test.js && node test/client-setup.test.js && node test/config-v2.test.js && node test/request-state.test.js && node test/retry-policy.test.js && node test/route-health.test.js && node test/phase-timeout.test.js && node test/pre-content-retry.test.js && node test/admin.test.js && node test/admin-page.test.js && node test/zcode-client.test.js && node test/security-files.test.js && node test/request-log.test.js && node test/event-store.test.js && node test/security-http.test.js && node test/streaming-keepalive.test.js && node test/multimodel-e2e.test.js && node test/fault-soak.test.js && node test/repo-gate.test.js && node test/smoke.js",
+    "test": "node test/cli-args.test.js && node test/config-output.test.js && node test/credential-store.test.js && node test/setup.test.js && node test/bridge-error.test.js && node test/chat-compat.test.js && node test/client-setup.test.js && node test/config-v2.test.js && node test/request-state.test.js && node test/retry-policy.test.js && node test/route-health.test.js && node test/phase-timeout.test.js && node test/pre-content-retry.test.js && node test/admin.test.js && node test/admin-page.test.js && node test/zcode-client.test.js && node test/security-files.test.js && node test/request-log.test.js && node test/event-store.test.js && node test/security-http.test.js && node test/streaming-keepalive.test.js && node test/multimodel-e2e.test.js && node test/fault-soak.test.js && node test/release-gate.test.js && node test/repo-gate.test.js && node test/smoke.js",
     "test:soak": "node scripts/fault-soak.js --duration-ms 1200000 --seed 7070 --report .artifacts/fault-soak.json",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "verify": "npm run lint && npm test && npm run security:scan && npm run secretlint && npm run repo:gate && npm run release:gate && npm run sca && npm run pack:check"
   },
   "engines": {
     "node": ">=18"
