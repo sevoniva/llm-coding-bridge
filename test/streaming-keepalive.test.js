@@ -106,13 +106,20 @@ async function testHeartbeatHelper() {
 
   // Real heartbeat writes comment frames periodically.
   const sink = backpressureSink();
-  const handle = startHeartbeat(sink, 50);
+  let heartbeatEvents = 0;
+  let clockReads = 0;
+  const handle = startHeartbeat(sink, 50, {
+    now: () => { clockReads += 1; return Date.now(); },
+    onHeartbeat: () => { heartbeatEvents += 1; },
+  });
   await new Promise((resolve) => setTimeout(resolve, 180));
   handle.stop();
   const joined = sink.output.join("");
   assert.match(joined, /^: ping\n\n/, `expected leading ping frame, got: ${JSON.stringify(joined)}`);
   const pingCount = (joined.match(/^: ping\n\n/gm) || []).length;
   assert.ok(pingCount >= 2, `expected at least 2 pings in 180ms with 50ms interval, got ${pingCount}`);
+  assert.equal(heartbeatEvents, pingCount);
+  assert.ok(clockReads >= heartbeatEvents);
   // After stop(), no more pings arrive.
   const before = sink.output.length;
   await new Promise((resolve) => setTimeout(resolve, 120));
