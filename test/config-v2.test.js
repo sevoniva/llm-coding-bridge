@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const { normalizeConfigDocument } = require("../lib/config-v2");
 const { getApiKey, loadConfig, normalizeServer, resolveUpstream, upstreamUrl } = require("../lib/config");
+const { createCredentialResolver } = require("../lib/credentials");
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -611,6 +612,78 @@ function testReferencedCredentialValidation() {
   assertFrozenTree(normalized.credentials["future-model"]);
 }
 
+function testCredentialResolverIsolation() {
+  const calls = [];
+  let now = 1000;
+  const resolver = createCredentialResolver({
+    "model-a": { source: "command", command: { command: "/usr/bin/printf", args: ["token-a"] } },
+    "model-b": { source: "command", command: { command: "/usr/bin/printf", args: ["token-b"] } },
+    "model-env": { source: "env", env: "MODEL_ENV_KEY" },
+    "model-client": { source: "client" },
+  }, {
+    env: { MODEL_ENV_KEY: "token-env" },
+    now: () => now,
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options });
+      return { status: 0, stdout: `${args[0]}\n`, stderr: "" };
+    },
+  });
+
+  assert.equal(resolver.resolve("model-a"), "token-a");
+  assert.equal(resolver.resolve("model-a"), "token-a");
+  assert.equal(resolver.resolve("model-b"), "token-b");
+  assert.equal(resolver.resolve("model-env"), "token-env");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], {
+    command: "/usr/bin/printf",
+    args: ["token-a"],
+    options: { encoding: "utf8", timeout: 10000, windowsHide: true, shell: false, maxBuffer: 64 * 1024 },
+  });
+
+  resolver.invalidate("model-a");
+  assert.equal(resolver.resolve("model-a"), "token-a");
+  assert.equal(resolver.resolve("model-b"), "token-b");
+  assert.equal(calls.length, 3);
+  assert.equal(resolver.resolve("model-client", { clientApiKey: "client-one" }), "client-one");
+  assert.equal(resolver.resolve("model-client", { clientApiKey: "client-two" }), "client-two");
+  assert.equal(resolver.availability("model-a"), true);
+  assert.equal(resolver.availability("model-client"), true);
+  assert.equal(getApiKey({
+    credentialRef: "model-env",
+    credentialResolver: resolver,
+    apiKeyEnv: "UNAVAILABLE_LEGACY_ENV",
+  }), "token-env");
+  assert.equal(getApiKey({
+    credentialRef: "model-client",
+    credentialResolver: resolver,
+    apiKeySource: "client",
+    clientApiKey: "client-three",
+  }), "client-three");
+
+  now += 10 * 60 * 1000 + 1;
+  assert.equal(resolver.resolve("model-b"), "token-b");
+  assert.equal(calls.length, 4);
+  for (const [reference, options] of [
+    ["missing", undefined],
+    ["model-client", {}],
+  ]) {
+    assert.throws(
+      () => resolver.resolve(reference, options),
+      (error) => {
+        assert.doesNotMatch(error.message, /token-|client-/);
+        return true;
+      }
+    );
+  }
+
+  const oversized = createCredentialResolver({
+    model: { source: "command", command: { command: "/usr/bin/printf", args: [] } },
+  }, {
+    spawnSync: () => ({ status: 0, stdout: "x".repeat((64 * 1024) + 1), stderr: "" }),
+  });
+  assert.throws(() => oversized.resolve("model"), /credential command output/i);
+}
+
 function testServerScalarNormalizationAndFreeze() {
   const nested = { retained: false };
   const raw = {
@@ -847,6 +920,7 @@ function main() {
   testProxyObjectsAreRejectedWithoutTraps();
   testUrlValidationAndNormalization();
   testReferencedCredentialValidation();
+  testCredentialResolverIsolation();
   testServerScalarNormalizationAndFreeze();
   testCapabilitiesValidation();
   testReliabilityValidation();

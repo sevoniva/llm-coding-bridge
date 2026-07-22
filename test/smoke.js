@@ -111,6 +111,7 @@ async function main() {
   let upstreamRequests = 0;
   let upstreamStreamClosed = false;
   let lastCompatPayload = null;
+  const versionTwoRequests = [];
   const upstream = http.createServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
       res.writeHead(404).end();
@@ -124,6 +125,9 @@ async function main() {
     req.on("end", () => {
       upstreamRequests += 1;
       const payload = JSON.parse(raw);
+      if (String(payload.model).startsWith("provider-model-id-")) {
+        versionTwoRequests.push({ model: payload.model, authorization: req.headers.authorization });
+      }
       const prompt = payload.messages[payload.messages.length - 1].content;
       if ((payload.model === "client-key-model" || prompt.includes("client key")) && req.headers.authorization !== "Bearer client-upstream-key") {
         res.writeHead(401, { "Content-Type": "application/json" });
@@ -204,7 +208,7 @@ async function main() {
         return;
       }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ id: "chatcmpl-test", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }] }));
+      res.end(JSON.stringify({ id: "chatcmpl-test", object: "chat.completion", model: payload.model, choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }] }));
     });
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
@@ -770,6 +774,62 @@ async function main() {
   multiBridge.kill("SIGTERM");
   await new Promise((resolve) => multiBridge.on("close", resolve));
   await new Promise((resolve) => upstream2.close(resolve));
+
+  const versionTwoConfigPath = path.join(tmp, "version-two.config.json");
+  fs.writeFileSync(versionTwoConfigPath, JSON.stringify({
+    version: 2,
+    server: { host: "127.0.0.1", port: 0 },
+    providers: [{
+      id: "shared-provider",
+      name: "Shared Provider",
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      models: [
+        { alias: "coding-fast", upstreamModel: "provider-model-id-a", credentialRef: "model-a" },
+        { alias: "coding-strong", upstreamModel: "provider-model-id-b", credentialRef: "model-b" },
+      ],
+    }],
+    credentials: {
+      "model-a": { source: "env", env: "MODEL_A_KEY" },
+      "model-b": { source: "env", env: "MODEL_B_KEY" },
+    },
+  }, null, 2));
+  const { child: versionTwoBridge, port: versionTwoPort } = await spawnBridge(cli, versionTwoConfigPath, {
+    MODEL_A_KEY: "route-key-a",
+    MODEL_B_KEY: "route-key-b",
+  });
+  const versionTwoModels = await fetch(`http://127.0.0.1:${versionTwoPort}/v1/models`);
+  const versionTwoModelsBody = await versionTwoModels.json();
+  assert.deepEqual(versionTwoModelsBody.data.map((model) => model.id), ["coding-fast", "coding-strong"]);
+  assert.deepEqual(versionTwoModelsBody.models.map((model) => model.slug), ["coding-fast", "coding-strong"]);
+  for (const alias of ["coding-fast", "coding-strong"]) {
+    const result = await requestJson(`http://127.0.0.1:${versionTwoPort}/v1/chat/completions`, {
+      model: alias,
+      messages: [{ role: "user", content: `route ${alias}` }],
+      stream: false,
+    });
+    assert.equal(result.model, alias);
+  }
+  const versionTwoResponse = await requestJson(`http://127.0.0.1:${versionTwoPort}/v1/responses`, {
+    model: "coding-fast",
+    input: "route responses",
+    stream: false,
+  });
+  assert.equal(versionTwoResponse.model, "coding-fast");
+  const versionTwoAnthropic = await requestJson(`http://127.0.0.1:${versionTwoPort}/v1/messages`, {
+    model: "coding-strong",
+    max_tokens: 16,
+    messages: [{ role: "user", content: "route anthropic" }],
+    stream: false,
+  }, { "anthropic-version": "2023-06-01" });
+  assert.equal(versionTwoAnthropic.model, "coding-strong");
+  assert.deepEqual(versionTwoRequests, [
+    { model: "provider-model-id-a", authorization: "Bearer route-key-a" },
+    { model: "provider-model-id-b", authorization: "Bearer route-key-b" },
+    { model: "provider-model-id-a", authorization: "Bearer route-key-a" },
+    { model: "provider-model-id-b", authorization: "Bearer route-key-b" },
+  ]);
+  versionTwoBridge.kill("SIGTERM");
+  await new Promise((resolve) => versionTwoBridge.on("close", resolve));
 
   // 优雅退出：SIGTERM 终止进行中流式响应
   const graceConfigPath = path.join(tmp, "grace.config.json");
