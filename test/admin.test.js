@@ -1,10 +1,12 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const http = require("node:http");
 const { Readable } = require("node:stream");
 const path = require("node:path");
 const { buildAdminStatus } = require("../lib/admin-status");
 const { createAdminHandler, isLoopbackPeer } = require("../lib/admin");
+const { probeModel, probeAllModels } = require("../lib/doctor");
 const { zcodeVerificationStatus } = require("../lib/zcode-client");
 
 const credentialReferences = [];
@@ -13,6 +15,7 @@ const runtime = {
     path: "/tmp/bridge/config.json",
     routes: [{
       alias: "coding-fast",
+      model: "provider-model-id-a",
       credentialRef: "credential-fast",
       capabilities: {
         contextWindow: 128000,
@@ -186,7 +189,14 @@ async function testAdminBoundary() {
     localToken: "admin-local-token",
     startedAt: 500,
     now: () => 2000,
-    runDoctor: async (request) => ({ ok: true, request }),
+    runDoctor: async (request) => ({
+      alias: request.model,
+      ok: true,
+      category: "success",
+      code: "OK",
+      elapsedMs: 1,
+      raw: "response-secret",
+    }),
   });
 
   const unknown = await invoke(handler, { pathname: "/admin/not-allowed" });
@@ -295,10 +305,201 @@ async function testAdminBoundary() {
     body: JSON.stringify({ model: "coding-fast" }),
   });
   assert.equal(accepted.status, 200);
-  assert.deepEqual(accepted.body, { ok: true, request: { model: "coding-fast" } });
+  assert.deepEqual(accepted.body, {
+    alias: "coding-fast",
+    ok: true,
+    category: "success",
+    code: "OK",
+    elapsedMs: 1,
+  });
 }
 
-testAdminBoundary()
+async function testDoctorActions() {
+  const safeConfig = {
+    routes: [
+      { alias: "coding-fast", model: "provider-model-id-a", credentialRef: "credential-fast" },
+      { alias: "coding-long", model: "provider-model-id-b", credentialRef: "credential-long" },
+    ],
+    credentialResolver: { resolve: () => "credential-secret", invalidate() {} },
+  };
+  const calls = [];
+  const times = [1000, 1025];
+  const success = await probeModel(safeConfig, "coding-fast", {
+    now: () => times.shift(),
+    fetchJson: async (route, payload) => {
+      calls.push({ route, payload });
+      return {
+        choices: [{ message: { content: "OK" } }],
+        providerBody: "response-secret",
+      };
+    },
+  });
+  assert.deepEqual(success, {
+    alias: "coding-fast",
+    ok: true,
+    category: "success",
+    code: "OK",
+    elapsedMs: 25,
+  });
+  assert.equal(calls[0].route.credentialResolver, safeConfig.credentialResolver);
+  assert.equal(calls[0].payload.model, "provider-model-id-a");
+  assert.doesNotMatch(JSON.stringify(success), /credential-secret|response-secret|provider-model-id/);
+
+  const failed = await probeModel(safeConfig, "coding-fast", {
+    now: (() => {
+      const values = [2000, 2040];
+      return () => values.shift();
+    })(),
+    fetchJson: async () => {
+      const error = new Error("response-secret");
+      error.status = 429;
+      throw error;
+    },
+  });
+  assert.deepEqual(failed, {
+    alias: "coding-fast",
+    ok: false,
+    category: "rate_limit",
+    code: "UPSTREAM_HTTP_429",
+    elapsedMs: 40,
+  });
+  assert.doesNotMatch(JSON.stringify(failed), /response-secret/);
+
+  const statusServer = http.createServer((_req, res) => {
+    res.writeHead(429, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "response-secret" }));
+  });
+  await new Promise((resolve, reject) => {
+    statusServer.once("error", reject);
+    statusServer.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const port = statusServer.address().port;
+    const liveFailure = await probeModel({
+      ...safeConfig,
+      routes: safeConfig.routes.map((route) => ({ ...route, baseUrl: `http://127.0.0.1:${port}/v1` })),
+    }, "coding-fast");
+    assert.equal(liveFailure.category, "rate_limit");
+    assert.equal(liveFailure.code, "UPSTREAM_HTTP_429");
+    assert.doesNotMatch(JSON.stringify(liveFailure), /response-secret/);
+  } finally {
+    await new Promise((resolve) => statusServer.close(resolve));
+  }
+
+  const unexpected = await probeModel(safeConfig, "coding-fast", {
+    now: () => 3000,
+    fetchJson: async () => ({ choices: [{ message: { content: "not the probe token response-secret" } }] }),
+  });
+  assert.deepEqual(unexpected, {
+    alias: "coding-fast",
+    ok: false,
+    category: "protocol",
+    code: "DOCTOR_UNEXPECTED_RESPONSE",
+    elapsedMs: 0,
+  });
+  assert.doesNotMatch(JSON.stringify(unexpected), /response-secret|not the probe/);
+
+  const order = [];
+  const all = await probeAllModels(safeConfig, {
+    now: () => 4000,
+    fetchJson: async (route) => {
+      order.push(route.alias);
+      return { choices: [{ message: { content: "OK" } }] };
+    },
+  });
+  assert.deepEqual(order, ["coding-fast", "coding-long"]);
+  assert.deepEqual(all.map((result) => result.alias), order);
+  assert.equal(all.every((result) => result.ok), true);
+
+  const invalidBodies = [
+    [{}, 400, "admin_invalid_doctor_request"],
+    [{ model: "coding-fast", allModels: true }, 400, "admin_invalid_doctor_request"],
+    [{ model: "coding-fast", extra: true }, 400, "admin_invalid_doctor_request"],
+    [{ allModels: false }, 400, "admin_invalid_doctor_request"],
+    [["coding-fast"], 400, "admin_invalid_doctor_request"],
+    [{ model: "missing-alias" }, 404, "admin_unknown_model"],
+  ];
+  const actionEvents = [];
+  let releaseFirst;
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  const blocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const actionRuntime = {
+    config: safeConfig,
+    credentialResolver: safeConfig.credentialResolver,
+    healthRegistry: { snapshot: () => [] },
+    eventStore: {
+      snapshot: () => [],
+      append(event) {
+        actionEvents.push(event);
+      },
+    },
+  };
+  const actionHandler = createAdminHandler({
+    runtime: actionRuntime,
+    localToken: "admin-local-token",
+    now: () => 5000,
+    runDoctor: async (request) => {
+      if (request.model === "coding-fast") {
+        firstStarted();
+        await blocked;
+      }
+      return request.allModels
+        ? { results: safeConfig.routes.map((route) => ({ alias: route.alias, ok: true, category: "success", code: "OK", elapsedMs: 2 })) }
+        : { alias: request.model, ok: true, category: "success", code: "OK", elapsedMs: 2, raw: "response-secret" };
+    },
+  });
+  const actionRequest = (body) => ({
+    method: "POST",
+    pathname: "/admin/api/doctor",
+    headers: { authorization: "Bearer admin-local-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  for (const [body, status, type] of invalidBodies) {
+    const response = await invoke(actionHandler, actionRequest(body));
+    assert.equal(response.status, status, JSON.stringify(body));
+    assert.equal(response.body.error.type, type);
+  }
+  const invalidJson = await invoke(actionHandler, {
+    ...actionRequest({}),
+    body: "{",
+  });
+  assert.equal(invalidJson.status, 400);
+  assert.equal(invalidJson.body.error.type, "admin_invalid_json");
+
+  const first = invoke(actionHandler, actionRequest({ model: "coding-fast" }));
+  await firstStarted;
+  const duplicate = await invoke(actionHandler, actionRequest({ model: "coding-fast" }));
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error.type, "admin_doctor_busy");
+  const overlappingAll = await invoke(actionHandler, actionRequest({ allModels: true }));
+  assert.equal(overlappingAll.status, 409);
+  assert.equal(overlappingAll.body.error.type, "admin_doctor_busy");
+  const independent = await invoke(actionHandler, actionRequest({ model: "coding-long" }));
+  assert.equal(independent.status, 200);
+  assert.equal(independent.body.alias, "coding-long");
+  releaseFirst();
+  const completed = await first;
+  assert.equal(completed.status, 200);
+  assert.deepEqual(completed.body, {
+    alias: "coding-fast",
+    ok: true,
+    category: "success",
+    code: "OK",
+    elapsedMs: 2,
+  });
+  assert.doesNotMatch(JSON.stringify(completed.body), /response-secret/);
+  assert.deepEqual(actionEvents.map((event) => [event.phase, event.model, event.outcome]), [
+    ["doctor_start", "coding-fast", undefined],
+    ["doctor_start", "coding-long", undefined],
+    ["doctor_result", "coding-long", "success"],
+    ["doctor_result", "coding-fast", "success"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(actionEvents), /response-secret|credential-secret/);
+}
+
+Promise.all([testAdminBoundary(), testDoctorActions()])
   .then(() => console.log("admin tests passed"))
   .catch((error) => {
     console.error(error);
