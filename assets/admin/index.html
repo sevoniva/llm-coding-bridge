@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>LLM Coding Bridge</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-block">
+      <span class="signal" id="connection-signal" aria-hidden="true"></span>
+      <h1>LLM Coding Bridge</h1>
+    </div>
+    <div class="connection" id="connection-state" role="status" aria-live="polite">Connecting</div>
+  </header>
+
+  <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+  <main>
+    <section class="band overview" aria-labelledby="runtime-heading">
+      <div class="section-heading">
+        <h2 id="runtime-heading">Runtime</h2>
+        <span class="version" id="bridge-version">-</span>
+      </div>
+      <dl class="metrics">
+        <div>
+          <dt>Uptime</dt>
+          <dd id="runtime-uptime">-</dd>
+        </div>
+        <div>
+          <dt>Routes</dt>
+          <dd id="runtime-routes">-</dd>
+        </div>
+        <div>
+          <dt>Credentials</dt>
+          <dd id="runtime-credentials">-</dd>
+        </div>
+        <div>
+          <dt>Config</dt>
+          <dd class="path-value" id="runtime-config">-</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="band routes" aria-labelledby="routes-heading">
+      <div class="section-heading routes-heading">
+        <h2 id="routes-heading">Routes</h2>
+        <div class="doctor-controls">
+          <label for="admin-token">Local token</label>
+          <input id="admin-token" type="password" autocomplete="off" spellcheck="false">
+          <button id="doctor-all" type="button">Run all</button>
+        </div>
+      </div>
+      <div class="table-scroll" tabindex="0">
+        <table>
+          <caption class="visually-hidden">Configured model route status</caption>
+          <thead>
+            <tr>
+              <th scope="col">Alias</th>
+              <th scope="col">Health</th>
+              <th scope="col">Credential</th>
+              <th scope="col">Failures</th>
+              <th scope="col">Last success</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="routes-body">
+            <tr><td colspan="6" class="empty">Loading</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="band client" aria-labelledby="client-heading">
+      <div class="section-heading">
+        <h2 id="client-heading">ZCode</h2>
+        <span class="state" id="zcode-state">Not verified</span>
+      </div>
+      <dl class="client-grid">
+        <div><dt>Version</dt><dd id="zcode-version">-</dd></div>
+        <div><dt>Managed provider</dt><dd id="zcode-managed">-</dd></div>
+        <div><dt>Aliases</dt><dd id="zcode-aliases">-</dd></div>
+        <div><dt>Private mode</dt><dd id="zcode-mode">-</dd></div>
+        <div><dt>Last verified</dt><dd id="zcode-verified">-</dd></div>
+      </dl>
+    </section>
+
+    <section class="band activity" aria-labelledby="activity-heading">
+      <div class="section-heading">
+        <h2 id="activity-heading">Activity</h2>
+        <span class="event-count" id="event-count">0 events</span>
+      </div>
+      <ol class="timeline" id="event-timeline" aria-live="polite">
+        <li class="empty">No activity</li>
+      </ol>
+    </section>
+  </main>
+</body>
+</html>
