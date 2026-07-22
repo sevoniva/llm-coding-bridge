@@ -8,11 +8,12 @@ const readline = require("node:readline/promises");
 
 const { parseCliArgs } = require("../lib/cli-args");
 const { loadConfig, isLoopbackHost } = require("../lib/config");
+const { applyMigrationPlan, effectiveConfigDocument, migrationPlan } = require("../lib/config-output");
 const { startServer } = require("../lib/server");
 const { doctor, status } = require("../lib/doctor");
 const { createCodexProfile } = require("../lib/codex-profile");
 const { configureClaudeCode, configureCodexDesktop, manualClaude, manualCodexCli, manualCodexDesktop, manualSetup } = require("../lib/client-setup");
-const { writePrivateFile } = require("../lib/file-safety");
+const { readFileSnapshot, writePrivateFile } = require("../lib/file-safety");
 const { installService, restartService, uninstallService } = require("../lib/service");
 
 const CWD_CONFIG = "llm-coding-bridge.config.json";
@@ -88,7 +89,7 @@ function publicErrorMessage(error) {
     default:
       break;
   }
-  if (message.startsWith("Unknown option:")) return "Unknown option.";
+  if (message.startsWith("Unknown option:")) return "Unknown argument.";
   if (message.startsWith("Unexpected positional argument:")) return "Unexpected positional argument.";
   if (message.startsWith("Unknown command:")) return "Unknown command.";
   if (message.startsWith("Unknown config action:")) return "Unknown config action.";
@@ -311,6 +312,32 @@ function printLogs(home, lines) {
   }
 }
 
+async function configCommand(args) {
+  const config = loadConfig(args.config);
+  if (args.action === "show") {
+    console.log(JSON.stringify(effectiveConfigDocument(config), null, 2));
+    return;
+  }
+  const plan = migrationPlan(config, readFileSnapshot(args.config));
+  if (args.dryRun) {
+    console.log(JSON.stringify(plan.preview, null, 2));
+    return;
+  }
+  let confirmed = args.yes === true;
+  if (!confirmed) {
+    const prompt = createPrompt();
+    try {
+      confirmed = await confirm(prompt, "Back up and migrate this config to version 2? / 备份并迁移到版本 2？[y/N]: ");
+    } finally {
+      prompt.close();
+    }
+  }
+  if (!confirmed) throw new Error("Migration was not confirmed.");
+  const result = applyMigrationPlan(plan);
+  console.log(`[OK] migrated ${result.file}`);
+  console.log(`[OK] backup ${result.backup}`);
+}
+
 async function main() {
   const args = withCliDefaults(parseCliArgs(process.argv.slice(2)));
   if (args.help || args.command === "help") {
@@ -318,6 +345,7 @@ async function main() {
     return;
   }
   if (args.command === "template") return printTemplate(args.template || "codex");
+  if (args.command === "config") return configCommand(args);
   if (args.command === "init") return initConfig(args.out, args.doctor, args.home);
   if (args.command === "doctor") return doctor(loadConfig(args.config), args.deep, args.tools);
   if (args.command === "status") return status(loadConfig(args.config));
