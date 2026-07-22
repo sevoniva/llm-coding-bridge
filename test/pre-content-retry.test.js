@@ -6,6 +6,7 @@ const { createEventStore } = require("../lib/event-store");
 const { createRequestState } = require("../lib/request-state");
 const { createRouteHealthRegistry } = require("../lib/route-health");
 const { runChatAttempts } = require("../lib/attempt-runner");
+const { startServer } = require("../lib/server");
 
 function sseData(delta) {
   return `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`;
@@ -260,6 +261,75 @@ async function main() {
       signal: controller.signal,
     }), (error) => error.category === "cancelled" && error.retryable === false);
     assert.equal(fake.requests.length, 0);
+
+    const bridge = startServer({
+      version: 2,
+      server: { host: "127.0.0.1", port: 0, heartbeatIntervalMs: 20 },
+      routes: [route],
+      upstreams: [route],
+      defaultUpstream: route,
+      credentialResolver,
+    });
+    if (!bridge.listening) await new Promise((resolve) => bridge.once("listening", resolve));
+    const bridgeUrl = `http://127.0.0.1:${bridge.address().port}`;
+    async function protocolRequest(pathname, body) {
+      const response = await fetch(`${bridgeUrl}${pathname}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { response, text: await response.text() };
+    }
+    try {
+      fake.script([
+        { type: "status", status: 408, retryAfter: "0" },
+        { type: "status", status: 408, retryAfter: "0" },
+        { type: "sse" },
+      ]);
+      const chat = await protocolRequest("/v1/chat/completions", {
+        model: route.alias,
+        messages: [{ role: "user", content: "chat retry" }],
+        stream: true,
+      });
+      assert.equal(chat.response.status, 200);
+      assert.match(chat.text, /recovered/);
+      assert.match(chat.text, /data: \[DONE\]/);
+      assert.equal(fake.requests.length, 3);
+
+      fake.script([
+        { type: "status", status: 408, retryAfter: "0" },
+        { type: "status", status: 408, retryAfter: "0" },
+        { type: "sse" },
+      ]);
+      const responses = await protocolRequest("/v1/responses", {
+        model: route.alias,
+        input: "responses retry",
+        stream: true,
+      });
+      assert.equal(responses.response.status, 200);
+      assert.match(responses.text, /response\.completed/);
+      assert.match(responses.text, /recovered/);
+      assert.equal(fake.requests.length, 3);
+
+      fake.script([
+        { type: "status", status: 408, retryAfter: "0" },
+        { type: "status", status: 408, retryAfter: "0" },
+        { type: "json" },
+      ]);
+      const anthropic = await protocolRequest("/v1/messages", {
+        model: route.alias,
+        messages: [{ role: "user", content: "anthropic retry" }],
+        max_tokens: 32,
+        stream: true,
+      });
+      assert.equal(anthropic.response.status, 200);
+      assert.match(anthropic.text, /message_start/);
+      assert.match(anthropic.text, /recovered/);
+      assert.equal(fake.requests.length, 3);
+    } finally {
+      bridge.closeAllConnections?.();
+      await new Promise((resolve) => bridge.close(resolve));
+    }
   } finally {
     await fake.close();
   }

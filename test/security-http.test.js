@@ -453,25 +453,20 @@ async function testChatRejectsEmptyUpstreamBody() {
     if (!bridge.listening) await new Promise((resolve) => bridge.once("listening", resolve));
     const bridgePort = bridge.address().port;
     try {
-      const response = await fetch(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "test-model",
-          messages: [{ role: "user", content: "empty stream" }],
-          stream: true,
-        }),
+      await assert.rejects(async () => {
+        const response = await fetch(`http://127.0.0.1:${bridgePort}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "test-model",
+            messages: [{ role: "user", content: "empty stream" }],
+            stream: true,
+          }),
+        });
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get("content-type") || "", /text\/event-stream/);
+        await response.text();
       });
-      const text = await response.text();
-      // Streaming path: the bridge commits SSE headers before fetching the
-      // upstream, so an empty upstream body becomes an SSE error frame rather
-      // than an HTTP 502. The client receives 200 + a `data: {...}` error and
-      // `data: [DONE]`, matching the SSE protocol for in-stream failures.
-      assert.equal(response.status, 200, text);
-      assert.match(response.headers.get("content-type") || "", /text\/event-stream/);
-      assert.match(text, /data: /);
-      assert.match(text, /upstream_error/);
-      assert.match(text, /data: \[DONE\]/);
       const health = await fetch(`http://127.0.0.1:${bridgePort}/health`);
       assert.equal(health.status, 200);
     } finally {

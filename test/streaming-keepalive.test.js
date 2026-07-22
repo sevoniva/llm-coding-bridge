@@ -273,8 +273,7 @@ async function testChatTransportFailureResetsDownstream() {
   });
 }
 
-// 5. Chat path: upstream 204 (no body) on a stream:true request → bridge emits
-//    HTTP 200 + SSE error data frame + [DONE] (NOT 502 JSON).
+// 5. A retryable empty upstream stream is reset after retries are exhausted.
 async function testChatStreamErrorOnUpstream204() {
   await withServer((_req, res) => {
     res.writeHead(204);
@@ -284,21 +283,20 @@ async function testChatStreamErrorOnUpstream204() {
     const bridge = startBridge(configuredUpstream);
     const bPort = await bridgePort(bridge);
     try {
-      const response = await fetch(`http://127.0.0.1:${bPort}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "test-model",
-          messages: [{ role: "user", content: "empty stream" }],
-          stream: true,
-        }),
+      await assert.rejects(async () => {
+        const response = await fetch(`http://127.0.0.1:${bPort}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "test-model",
+            messages: [{ role: "user", content: "empty stream" }],
+            stream: true,
+          }),
+        });
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get("content-type"), /text\/event-stream/);
+        await response.text();
       });
-      const text = await response.text();
-      assert.equal(response.status, 200, text);
-      assert.match(response.headers.get("content-type"), /text\/event-stream/);
-      assert.match(text, /data: /);
-      assert.match(text, /upstream_error/);
-      assert.match(text, /data: \[DONE\]/);
       const health = await fetch(`http://127.0.0.1:${bPort}/health`);
       assert.equal(health.status, 200);
     } finally {
@@ -481,8 +479,7 @@ async function testResponsesEmitsCreatedBeforeUpstream() {
   });
 }
 
-// 8. Responses path: fetch throw after writer.start() → emits response.failed (not
-//    a torn-down connection).
+// 8. Exhausted retryable Responses failures reset the committed stream.
 async function testResponsesFailOnFetchThrow() {
   await withServer((_req, res) => {
     // Upstream returns 500 → bridge's !ok branch → writer.fail("Upstream error.")
@@ -493,21 +490,19 @@ async function testResponsesFailOnFetchThrow() {
     const bridge = startBridge(configuredUpstream);
     const bPort = await bridgePort(bridge);
     try {
-      const response = await fetch(`http://127.0.0.1:${bPort}/v1/responses`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "test-model",
-          input: "hi",
-          stream: true,
-        }),
+      await assert.rejects(async () => {
+        const response = await fetch(`http://127.0.0.1:${bPort}/v1/responses`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "test-model",
+            input: "hi",
+            stream: true,
+          }),
+        });
+        assert.equal(response.status, 200);
+        await response.text();
       });
-      const text = await response.text();
-      assert.equal(response.status, 200, text);
-      assert.match(text, /event: response\.created/);
-      assert.match(text, /event: response\.failed/);
-      assert.match(text, /upstream_error/);
-      assert.match(text, /data: \[DONE\]/);
     } finally {
       await closeBridge(bridge);
     }

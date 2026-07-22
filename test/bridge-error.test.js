@@ -57,6 +57,7 @@ function testClassifierTable() {
     ["response limit is protocol", { code: "UPSTREAM_RESPONSE_TOO_LARGE" }, "protocol", true, "model_route"],
     ["SSE event limit is protocol", { code: "UPSTREAM_SSE_EVENT_TOO_LARGE" }, "protocol", true, "model_route"],
     ["client cancellation is cancelled", { code: "CLIENT_CANCELLED" }, "cancelled", false, "request"],
+    ["closed downstream is cancelled", { code: "DOWNSTREAM_CLOSED" }, "cancelled", false, "request"],
     ["local configuration errors are local config", { code: "LOCAL_CONFIGURATION_ERROR" }, "local_config", false, "local_process"],
   ];
 

@@ -358,14 +358,12 @@ async function main() {
   assert.equal(searchTool.output[0].execution, "client");
   assert.equal(searchTool.output[0].arguments.query, "Gmail search emails");
 
-  // 流式异常：上游 !ok 时收到 response.failed 而非 response.completed
-  const failStream = await requestRaw(`http://127.0.0.1:${bridgePort}/v1/responses`, {
+  // Exhausted retryable failures reset a committed stream so the client can retry.
+  await assert.rejects(requestRaw(`http://127.0.0.1:${bridgePort}/v1/responses`, {
     model: "fake-model",
     input: "upstream fail",
     stream: true,
-  });
-  assert.match(failStream.text, /response\.failed/);
-  assert.doesNotMatch(failStream.text, /response\.completed/);
+  }), /terminated|fetch failed/i);
 
   const models = await fetch(`http://127.0.0.1:${bridgePort}/v1/models`, { headers: { Authorization: "Bearer test" } });
   assert.equal(models.status, 200);
@@ -654,7 +652,7 @@ async function main() {
   nocacheBridge.kill("SIGTERM");
   await new Promise((resolve) => nocacheBridge.on("close", resolve));
 
-  // apiKey 缓存 401 失效：第一次 key 错 401 → bust → 第二次 key 对 200
+  // A 401 refreshes the current credential once within the same request.
   const rotateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "lcb-rot-"));
   const rotateCounter = path.join(rotateTmp, "n");
   const rotateScript = path.join(rotateTmp, "key.sh");
@@ -682,7 +680,9 @@ async function main() {
   const rotateFirst = await requestRaw(`http://127.0.0.1:${rotateBridgePort}/v1/chat/completions`, {
     model: "m", messages: [{ role: "user", content: "hello" }], stream: false,
   });
-  assert.equal(rotateFirst.status, 401);
+  assert.equal(rotateFirst.status, 200, rotateFirst.text);
+  assert.equal(JSON.parse(rotateFirst.text).choices[0].message.content, "OK");
+  assert.equal(fs.readFileSync(rotateCounter, "utf8").trim(), "2");
   const rotateSecond = await requestJson(`http://127.0.0.1:${rotateBridgePort}/v1/chat/completions`, {
     model: "m", messages: [{ role: "user", content: "hello" }], stream: false,
   });
