@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 
+const { parseCliArgs } = require("../lib/cli-args");
 const { loadConfig, isLoopbackHost } = require("../lib/config");
 const { startServer } = require("../lib/server");
 const { doctor, status } = require("../lib/doctor");
@@ -24,31 +25,27 @@ function defaultConfigPath(home) {
   return fs.existsSync(CWD_CONFIG) ? path.resolve(CWD_CONFIG) : homeConfigPath(home);
 }
 
-function parseArgs(argv) {
-  const command = argv[0] && !argv[0].startsWith("-") ? argv.shift() : "help";
-  const args = { command, config: "", out: "", name: "llm-coding-bridge", home: os.homedir(), lines: 80 };
-  if (command === "template" && argv[0] && !argv[0].startsWith("-")) args.template = argv.shift();
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === "--config" || arg === "-c") args.config = argv[++i];
-    else if (arg === "--out" || arg === "-o") args.out = argv[++i];
-    else if (arg === "--name") args.name = argv[++i];
-    else if (arg === "--home") args.home = argv[++i];
-    else if (arg === "--lines") args.lines = Number(argv[++i]);
-    else if (arg === "--force") args.force = true;
-    else if (arg === "--deep") args.deep = true;
-    else if (arg === "--tools") args.tools = true;
-    else if (arg === "--no-doctor") args.doctor = false;
-    else if (arg === "--help" || arg === "-h") args.help = true;
-    else throw new Error(`Unknown argument: ${arg}`);
-  }
-  if (!args.config) args.config = defaultConfigPath(args.home);
-  if (!args.out) args.out = homeConfigPath(args.home);
+function withCliDefaults(parsed) {
+  const args = { ...parsed };
+  args.home ||= os.homedir();
+  args.name ||= "llm-coding-bridge";
+  args.lines ||= 80;
+  args.config ||= defaultConfigPath(args.home);
+  args.out ||= homeConfigPath(args.home);
   return args;
 }
 
 function usage() {
   return `Usage:
+  llm-coding-bridge setup [--profile <file>] [--advanced]
+  llm-coding-bridge config show --effective [--config <file>]
+  llm-coding-bridge config migrate [--dry-run] [--config <file>]
+  llm-coding-bridge client add zcode [--dry-run]
+  llm-coding-bridge client remove zcode [--dry-run]
+  llm-coding-bridge client rollback zcode --backup <file>
+  llm-coding-bridge doctor --model <alias> | --all-models
+
+Advanced compatibility commands:
   llm-coding-bridge init [--out <file>]
   llm-coding-bridge serve [--config <file>]
   llm-coding-bridge doctor [--deep] [--tools] [--config <file>]
@@ -91,8 +88,19 @@ function publicErrorMessage(error) {
     default:
       break;
   }
-  if (message.startsWith("Unknown argument:")) return "Unknown argument.";
+  if (message.startsWith("Unknown option:")) return "Unknown option.";
+  if (message.startsWith("Unexpected positional argument:")) return "Unexpected positional argument.";
   if (message.startsWith("Unknown command:")) return "Unknown command.";
+  if (message.startsWith("Unknown config action:")) return "Unknown config action.";
+  if (message.startsWith("Unknown client action:")) return "Unknown client action.";
+  if (message.startsWith("Unknown client:")) return "Unknown client.";
+  if (message.startsWith("Unknown template:")) return "Unknown template.";
+  if (message.startsWith("Duplicate option:")) return "Duplicate option.";
+  if (message.includes("cannot be used together")) return message;
+  if (message.endsWith("requires a value.")) return message;
+  if (message.endsWith("requires --effective.")) return message;
+  if (message.endsWith("requires --backup.")) return message;
+  if (message.endsWith("must be a positive integer.")) return message;
   if (message.startsWith("Config file not found:")) return "Config file not found. Run \"llm-coding-bridge init\" to create one.";
   if (message.startsWith("Config file is not valid JSON:")) return "Config file is not valid JSON.";
   if (message.startsWith("apiKeyCommand exited with")) return "apiKeyCommand exited with a non-zero status.";
@@ -304,7 +312,7 @@ function printLogs(home, lines) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = withCliDefaults(parseCliArgs(process.argv.slice(2)));
   if (args.help || args.command === "help") {
     console.log(usage());
     return;
