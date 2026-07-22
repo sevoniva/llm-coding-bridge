@@ -33,7 +33,7 @@ llm-coding-bridge --help
 Run the setup guide:
 
 ```bash
-llm-coding-bridge init
+llm-coding-bridge setup
 ```
 
 The config is written to `~/.llm-coding-bridge/config.json` by default (override with `--out`). All commands read that file by default; a `llm-coding-bridge.config.json` in the current directory takes precedence, and `--config` overrides both.
@@ -52,6 +52,24 @@ Installing a new package version does not rewrite `~/.llm-coding-bridge/config.j
 ### Upgrading to v0.6.0
 
 Version `0.6.0` enforces the listener and file-permission boundaries described in this guide. Non-loopback listeners require `server.localToken`. POST API routes require `application/json` and reject non-loopback browser origins. Files written by `init` and client setup use mode `0600`, with `0700` for newly created private directories. When a client config path is a symbolic link, the link is preserved and its regular-file target is updated atomically. Existing files are not rewritten during package installation; review their permissions once with `chmod 600 <file>`.
+
+### Upgrading to v0.7.0
+
+Version `0.7.0` adds version 2 multi-model configuration, independent model credentials, bounded pre-content recovery, a redacted local admin console, and managed ZCode 3.x setup. Existing version 1 configurations remain supported and package installation does not rewrite them.
+
+Preview migration before applying it:
+
+```bash
+llm-coding-bridge config migrate --dry-run
+llm-coding-bridge config migrate
+llm-coding-bridge config show --effective
+```
+
+For a fresh or multi-model configuration, use `llm-coding-bridge setup`. Validate routing with `doctor --all-models`. Preview ZCode changes with `client add zcode --dry-run`; add, remove, and rollback touch only the bridge-managed provider in `~/.zcode/v2/config.json`. Unknown ZCode versions are preview-only. The legacy `~/.zcode/cli/config.json` file is not modified.
+
+The reliability contract is deliberately conservative: retry is allowed only before semantic output; text, reasoning, refusal, function calls, tool calls, or audio stop replay. Header, first-data, idle, non-streaming total, and streaming total deadlines are separate. Retry-After is bounded, cooldown is isolated per route, valid non-SSE completions are normalized, and downstream heartbeats do not count as upstream model progress.
+
+Before forwarding Chat Completions, v0.7 removes assistant history entries whose content is empty, whitespace-only, `null`, or an empty array. Assistant entries with another semantic payload are preserved without the empty `content` field. This handles strict upstreams that reject empty assistant content.
 
 The command starts an interactive bilingual setup flow:
 
@@ -76,7 +94,7 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
 ```
 
-Client setup defaults to `No`. When enabled, `init` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`. In client-key mode, generated client configuration can contain the real upstream key as a bearer token. Generated secret-bearing files and backups use mode `0600`.
+Client setup defaults to `No`. When enabled, `setup` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`. In client-key mode, generated client configuration can contain the real upstream key as a bearer token. Generated secret-bearing files and backups use mode `0600`.
 
 Prompt reference:
 

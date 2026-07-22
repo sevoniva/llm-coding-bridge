@@ -1,6 +1,6 @@
 # @sevoniva/llm-coding-bridge
 
-Local bridge for using an OpenAI-compatible `/chat/completions` provider with coding clients that expect OpenAI-style endpoints.
+Local bridge for routing coding clients to one or more OpenAI-compatible models through a stable local endpoint.
 
 It exposes:
 
@@ -9,7 +9,7 @@ It exposes:
 - `/v1/chat/completions` for OpenAI-compatible clients
 - `/v1/models` and `/health` for client checks
 
-The bridge is designed for a dedicated upstream connection: one local endpoint for Codex, Claude Code, and OpenAI-compatible clients.
+The bridge gives Codex, Claude Code, ZCode, and OpenAI-compatible clients one local endpoint while keeping model aliases, upstream IDs, and credentials isolated.
 
 ## Install
 
@@ -17,19 +17,41 @@ The bridge is designed for a dedicated upstream connection: one local endpoint f
 npm install -g @sevoniva/llm-coding-bridge
 ```
 
-Or run with npx:
+Run the v0.7 guided setup:
 
 ```bash
-npx @sevoniva/llm-coding-bridge init
+llm-coding-bridge setup
 ```
+
+Then verify every configured alias and start the service:
+
+```bash
+llm-coding-bridge doctor --all-models
+llm-coding-bridge install-service
+llm-coding-bridge client add zcode --dry-run
+llm-coding-bridge client add zcode
+```
+
+`setup` stores independent credential references for each model and never writes an upstream API key into the bridge config. Package installation and upgrades do not rewrite bridge or client configuration.
+
+### What's new in v0.7
+
+- Version 2 configuration separates client aliases, exact upstream model IDs, and credentials, including multiple models on one shared endpoint.
+- Pre-content failures can retry with bounded backoff and per-route cooldown; retries stop once text, reasoning, refusal, or tool output has been emitted.
+- Chat, Responses, and Anthropic-compatible routes share phase-aware deadlines and route health while preserving protocol-specific streaming behavior.
+- Empty assistant history entries are removed before `/chat/completions` forwarding, preventing upstream `Assistant message content ... cannot be empty` errors. Assistant entries carrying tool calls, reasoning, refusal, function calls, or audio remain intact.
+- ZCode 3.x configuration is managed through previewable add/remove/rollback commands. Only the bridge-owned provider is changed.
+- `/admin` exposes redacted route health and request timelines on the local bridge.
 
 ## Configure
 
-Run the bilingual setup guide:
+The v0.7 command is:
 
 ```bash
-llm-coding-bridge init
+llm-coding-bridge setup
 ```
+
+`llm-coding-bridge init` remains available as an advanced version 1 compatibility command.
 
 The config is written to `~/.llm-coding-bridge/config.json` by default (override with `--out`). All commands read that file by default; a `llm-coding-bridge.config.json` in the current directory takes precedence, and `--config` overrides both.
 
@@ -380,7 +402,7 @@ llm-coding-bridge logs --lines 80
 - `/v1/chat/completions`：给 OpenAI-compatible 客户端使用
 - `/v1/models` 和 `/health`：用于客户端检测
 
-它面向专用上游连接：用一个本地端点同时服务 Codex、Claude Code 和 OpenAI-compatible 客户端。
+它通过一个稳定的本地端点，为 Codex、Claude Code、ZCode 和 OpenAI-compatible 客户端路由一个或多个模型，并隔离客户端别名、上游模型 ID 和凭据。
 
 安装：
 
@@ -388,11 +410,29 @@ llm-coding-bridge logs --lines 80
 npm install -g @sevoniva/llm-coding-bridge
 ```
 
-生成配置：
+运行 v0.7 配置向导：
 
 ```bash
-llm-coding-bridge init
+llm-coding-bridge setup
 ```
+
+完成后验证所有模型并配置 ZCode：
+
+```bash
+llm-coding-bridge doctor --all-models
+llm-coding-bridge client add zcode --dry-run
+llm-coding-bridge client add zcode
+```
+
+`setup` 为每个模型保存独立的凭据引用，不会把上游 API Key 写入 bridge 配置。安装或升级 npm 包不会改写已有 bridge 或客户端配置。`llm-coding-bridge init` 继续作为 version 1 高级兼容命令保留。
+
+### v0.7 主要变化
+
+- version 2 配置分离客户端别名、真实上游模型 ID 和凭据，支持同一上游端点的多模型路由。
+- 仅在尚未产生文本、推理、拒答或工具输出前执行有限重试，并按路由独立冷却。
+- 空字符串、纯空白、`null` 或空数组的 assistant 历史会在转发 `/chat/completions` 前被清理，避免 `Assistant message content ... cannot be empty`；包含 tool call、推理、拒答、函数调用或音频的消息仍会保留。
+- ZCode 3.x 支持可预览的 add/remove/rollback，只修改 bridge 自己管理的 provider。
+- 本地 `/admin` 提供脱敏后的路由健康状态和请求时间线。
 
 配置默认写入 `~/.llm-coding-bridge/config.json`（可用 `--out` 覆盖）。所有命令默认读取该文件；当前目录存在 `llm-coding-bridge.config.json` 时优先使用，`--config` 优先级最高。
 
