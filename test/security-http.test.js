@@ -148,6 +148,32 @@ async function testDeadlineCoversResponseBody() {
   });
 }
 
+async function testStreamingHasNoLegacyTotalDeadline() {
+  await withServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.flushHeaders();
+    setTimeout(() => res.write("data: first\n\n"), 20);
+    setTimeout(() => res.end("data: second\n\n"), 160);
+  }, async (port) => {
+    const response = await fetchUpstream(upstream(port, {
+      timeoutMs: 80,
+      reliability: {
+        headerTimeoutMs: 80,
+        firstDataTimeoutMs: 80,
+        idleTimeoutMs: 200,
+        nonStreamingTotalTimeoutMs: 80,
+        streamingTotalTimeoutMs: 0,
+      },
+    }), {
+      model: "test-model",
+      messages: [{ role: "user", content: "long stream" }],
+      stream: true,
+    });
+    const body = await response.text();
+    assert.match(body, /data: second/);
+  });
+}
+
 async function testResponseByteLimitForNonStreamAndStream() {
   const fullBody = JSON.stringify({ choices: [{ message: { content: "response larger than the configured budget" } }] });
   await withServer((_req, res) => {
@@ -530,6 +556,7 @@ async function main() {
   process.env.SECURITY_HTTP_TEST_KEY = "test-key";
   testListenerAuthenticationBoundary();
   await testDeadlineCoversResponseBody();
+  await testStreamingHasNoLegacyTotalDeadline();
   await testResponseByteLimitForNonStreamAndStream();
   await testSseFramingAndEventLimit();
   await testNonStreamSseUsesConfiguredEventLimit();
