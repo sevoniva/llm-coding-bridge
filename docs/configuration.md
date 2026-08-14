@@ -71,6 +71,12 @@ The reliability contract is deliberately conservative: retry is allowed only bef
 
 Before forwarding Chat Completions, v0.7 removes assistant history entries whose content is empty, whitespace-only, `null`, or an empty array. Assistant entries with another semantic payload are preserved without the empty `content` field. This handles strict upstreams that reject empty assistant content.
 
+### Upgrading to v0.8.0
+
+Version `0.8.0` adds source-compatible DeepSeek Harness custom-provider support. It preserves the built-in `deepseek-official` route, adds Harness-specific streaming and header handling at the bridge boundary, and supports optional `translateThinkingToReasoningEffort` and `maxOutputTokens` route settings. Existing version 1 and version 2 configurations remain supported.
+
+Add the bridge as a separate `openai-completions` custom provider in Harness with `baseURL: http://127.0.0.1:37629/v1`; no Harness source change is required. See the [DeepSeek Harness](#deepseek-harness) section for the provider shape and route options.
+
 The command starts an interactive bilingual setup flow:
 
 ```text
@@ -348,9 +354,58 @@ Other top-level fields and other `extra_body` fields are preserved.
 
 For `stream: false` requests, the bridge expects one JSON response. If the upstream returns a complete SSE sequence instead, the bridge aggregates the chunks into a standard OpenAI `chat.completion` object. Response normalization is automatic and limited to non-streaming requests. Streaming response bodies pass through unchanged, while request cleanup applies to both modes when enabled.
 
+### DeepSeek Harness
+
+No DeepSeek Harness source change is required. Keep its built-in `deepseek-official` route unchanged and add a separate custom provider with:
+
+- `api: openai-completions`
+- `baseURL: http://127.0.0.1:37629/v1`
+- the bridge model alias as its selected model
+- a dedicated credential reference that contains the upstream key when the bridge route uses `apiKeySource: "client"`
+
+For example, the relevant Harness settings shape is:
+
+```yaml
+agent-default-model:
+  provider: local-bridge
+  model: your-model
+llm-pi-ai:
+  providers:
+    local-bridge:
+      displayName: Local Bridge
+      apiKeyEnv: LOCAL_BRIDGE_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:37629/v1
+      compat:
+        thinkingFormat: openai
+        supportsReasoningEffort: true
+      models:
+        - id: your-model
+```
+
+The custom provider and `deepseek-official` then appear side by side in the model selector. Selecting a default does not remove the other route.
+
+The bridge recognizes the Harness User-Agent on Chat Completions requests. For that client it preserves empty assistant `content` in tool-call history, forwards only `user-agent`, `x-deepseek-harness-user-id`, `x-deepseek-harness-session-id`, and `x-deepseek-harness-compact`, and defers downstream SSE headers until a successful upstream SSE response is known. This lets normal upstream HTTP errors, including an HTTP-200 JSON envelope with a valid embedded 4xx/5xx `code`, remain HTTP errors instead of becoming a completed stream.
+
+These optional route fields cover common gateway differences:
+
+```json
+{
+  "upstream": {
+    "translateThinkingToReasoningEffort": true,
+    "maxOutputTokens": 131072
+  }
+}
+```
+
+- `translateThinkingToReasoningEffort`: remove the top-level `thinking` field; keep a client-provided `reasoning_effort`, and map `thinking.type: "disabled"` to `reasoning_effort: "none"` when no effort was provided.
+- `maxOutputTokens`: cap larger numeric `max_tokens` and `max_completion_tokens` values. Use the actual verified limit for the selected upstream route.
+
+In version 1, set the fields on `upstream` or an `upstreams` item. In version 2, set them on a provider to inherit across its models, or override either field on one model.
+
 ### Streaming keepalive and sleep/wake recovery
 
-For OpenAI Chat Completions with `stream: true`, the bridge commits SSE response headers immediately. After every idle `server.heartbeatIntervalMs`, it emits a protocol-valid empty `chat.completion.chunk` data event. A real upstream chunk resets the idle timer, and the heartbeat remains active for later mid-stream gaps. This gives ZCode application-level model events before the first upstream byte and across long pauses after output has started.
+For OpenAI Chat Completions with `stream: true`, every idle `server.heartbeatIntervalMs` emits an SSE comment followed by a protocol-valid empty `chat.completion.chunk` data event. A real upstream chunk resets the idle timer, and the heartbeat remains active for later mid-stream gaps. ZCode receives response headers immediately and gets application-level model events before the first upstream byte. DeepSeek Harness receives headers after a successful upstream SSE response is known, then gets both comment-aware and data-aware watchdog activity across long gaps.
 
 Responses retains its immediate `response.created` / `response.in_progress` events and comment heartbeat while waiting for upstream headers. Anthropic retains its comment heartbeat while its non-streaming upstream response is buffered.
 
@@ -1043,9 +1098,58 @@ bridge 显式设置 Node HTTP 服务器超时，避免长流被 Node 默认值�
 
 对于 `stream: false` 请求，如果上游返回完整 SSE 序列，bridge 会将其聚合为标准 OpenAI `chat.completion` 对象。响应归一化仅作用于非流式请求；流式响应正文仍原样透传。
 
+### DeepSeek Harness
+
+无需修改 DeepSeek Harness 源码。保留内置的 `deepseek-official` 路由不变，并新增一条独立的自定义 Provider：
+
+- `api: openai-completions`
+- `baseURL: http://127.0.0.1:37629/v1`
+- 选择 bridge 暴露的模型别名
+- 当 bridge 路由使用 `apiKeySource: "client"` 时，为自定义线路使用独立凭据引用并保存真实上游 Key
+
+对应的 Harness 设置结构示例：
+
+```yaml
+agent-default-model:
+  provider: local-bridge
+  model: your-model
+llm-pi-ai:
+  providers:
+    local-bridge:
+      displayName: Local Bridge
+      apiKeyEnv: LOCAL_BRIDGE_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:37629/v1
+      compat:
+        thinkingFormat: openai
+        supportsReasoningEffort: true
+      models:
+        - id: your-model
+```
+
+这样自定义线路与 `deepseek-official` 会同时出现在模型选择器中；设置默认模型不会删除另一条线路。
+
+bridge 会根据 Harness 的 User-Agent 识别 Chat Completions 请求。对此客户端，bridge 会保留工具调用历史中 assistant 的空 `content`；仅转发 `user-agent`、`x-deepseek-harness-user-id`、`x-deepseek-harness-session-id` 和 `x-deepseek-harness-compact`；并等到确认上游成功返回 SSE 后才提交下游 SSE 响应头。这样，普通上游 HTTP 错误，以及 HTTP 200 JSON 中带有有效 4xx/5xx `code` 的错误封装，都能继续作为 HTTP 错误返回，而不会伪装成已完成的流。
+
+以下可选路由字段用于兼容常见网关差异：
+
+```json
+{
+  "upstream": {
+    "translateThinkingToReasoningEffort": true,
+    "maxOutputTokens": 131072
+  }
+}
+```
+
+- `translateThinkingToReasoningEffort`：移除顶层 `thinking`；保留客户端已提供的 `reasoning_effort`；客户端没有提供 effort 且 `thinking.type: "disabled"` 时，映射为 `reasoning_effort: "none"`。
+- `maxOutputTokens`：限制更大的数值型 `max_tokens` 和 `max_completion_tokens`，具体值应使用对应上游路由的真实已验证上限。
+
+版本 1 在 `upstream` 或 `upstreams` 条目上配置；版本 2 可在 provider 层配置并由其模型继承，也可在单个 model 层覆盖。
+
 ### 流式保活与睡眠唤醒恢复
 
-OpenAI Chat Completions 的 `stream: true` 请求会立即提交 SSE 响应头。每次连续空闲达到 `server.heartbeatIntervalMs` 后，bridge 都会发送一个协议有效、`delta` 为空的 `chat.completion.chunk` 数据事件。每收到一个真实上游数据块，空闲计时会重新开始；后续流中间再次长时间静默时，心跳仍会继续。这使 ZCode 在首字节前和已经开始输出后的长间隔中都能看到应用层模型事件。
+OpenAI Chat Completions 的 `stream: true` 请求每次连续空闲达到 `server.heartbeatIntervalMs` 后，都会依次发送 SSE 注释和一个协议有效、`delta` 为空的 `chat.completion.chunk` 数据事件。每收到一个真实上游数据块，空闲计时会重新开始；后续流中间再次长时间静默时，心跳仍会继续。ZCode 会立即收到响应头，并在首个上游字节前看到应用层模型事件；DeepSeek Harness 会等到确认上游成功返回 SSE 后再收到响应头，此后注释感知和数据感知的 watchdog 都能在长间隔中获得活动信号。
 
 Responses 路径保留立即发送的 `response.created` / `response.in_progress` 事件，并在等待上游响应头时使用注释心跳。Anthropic 路径在缓冲非流式上游响应期间保留注释心跳。
 

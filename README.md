@@ -239,9 +239,28 @@ This option removes `chat_template_kwargs` from the top-level request and from `
 
 For a non-streaming request, the bridge also accepts an upstream response delivered as a complete SSE sequence and converts it into a standard OpenAI `chat.completion` JSON object. This keeps ZCode context compaction and other `stream: false` workflows compatible with endpoints that use SSE framing for non-streaming responses. Response normalization is limited to non-streaming requests; streaming response bodies pass through unchanged. Request cleanup applies to both modes when enabled.
 
+### DeepSeek Harness compatibility
+
+DeepSeek Harness can add the bridge as a custom provider without a source patch and without replacing its built-in `deepseek-official` route. Add an `openai-completions` provider with `baseURL` set to `http://127.0.0.1:37629/v1`, select the bridge model alias, and give that custom route its own credential reference. When the bridge route uses `apiKeySource: "client"`, the custom provider credential must contain the real upstream key.
+
+The bridge detects Harness Chat Completions requests from their stable User-Agent and applies only the transport compatibility that client needs: it retains empty assistant `content` in tool-call history, forwards the Harness attribution/identity header allowlist, emits comment and empty-delta heartbeats, and preserves upstream HTTP errors before the downstream SSE response is committed.
+
+Some compatible upstreams need two additional route settings:
+
+```json
+{
+  "upstream": {
+    "translateThinkingToReasoningEffort": true,
+    "maxOutputTokens": 131072
+  }
+}
+```
+
+`translateThinkingToReasoningEffort` removes the unsupported top-level `thinking` extension while retaining Harness's supported `reasoning_effort`; disabled thinking maps to `reasoning_effort: "none"`. `maxOutputTokens` caps `max_tokens` and `max_completion_tokens` at the verified upstream limit. Set the cap to the limit published or tested for your route. In version 2 configuration, either option can be set at provider level and overridden per model.
+
 ### Streaming keepalive and sleep/wake recovery
 
-For OpenAI Chat Completions with `stream: true`, the bridge commits SSE headers immediately and emits a protocol-valid empty `chat.completion.chunk` after each idle `server.heartbeatIntervalMs` (default `15000`; `0` disables). The idle timer resets whenever a real upstream chunk arrives and continues for later gaps, so ZCode sees model data activity both before the first upstream byte and during long mid-stream pauses. Responses keeps its immediate `response.created` / `response.in_progress` events plus comment heartbeat, and Anthropic keeps its comment heartbeat while its upstream response is buffered.
+For OpenAI Chat Completions with `stream: true`, the bridge emits an SSE comment followed by a protocol-valid empty `chat.completion.chunk` after each idle `server.heartbeatIntervalMs` (default `15000`; `0` disables). The idle timer resets whenever a real upstream chunk arrives and continues for later gaps. ZCode receives headers immediately and sees data activity before the first upstream byte; DeepSeek Harness waits for successful upstream SSE headers so an upstream HTTP error can remain an HTTP error. Responses keeps its immediate `response.created` / `response.in_progress` events plus comment heartbeat, and Anthropic keeps its comment heartbeat while its upstream response is buffered.
 
 Closing a MacBook lid suspends the local bridge and normally breaks open TCP streams; no local process can keep executing while macOS is in clamshell sleep. After wake, an upstream Chat transport failure is exposed as a downstream connection failure so ZCode can apply its normal request retry policy. The bridge does not disable macOS sleep and does not replay a partially consumed request, which avoids duplicate model work or billing. If an upstream intermittently ignores `stream: true` and returns a normal JSON chat completion, the bridge converts it to valid downstream SSE. An invalid or error-bearing HTTP 200 non-SSE body resets the connection so ZCode can retry; explicit upstream HTTP errors and empty responses remain protocol-level SSE errors.
 
@@ -590,9 +609,28 @@ bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-up
 
 对于 `stream: false` 请求，如果上游返回完整 SSE 序列，bridge 会将其聚合为标准 OpenAI `chat.completion` JSON 对象，以兼容 ZCode 的上下文压缩和摘要流程。响应归一化仅作用于非流式请求；流式响应正文仍原样透传。
 
+#### DeepSeek Harness 兼容
+
+DeepSeek Harness 无需修改客户端源码，也无需替换内置的 `deepseek-official` 路由。新增一个 `openai-completions` 自定义 Provider，将 `baseURL` 指向 `http://127.0.0.1:37629/v1`，模型选择 bridge 的模型别名，并为这条自定义线路使用独立的凭据引用。当 bridge 路由使用 `apiKeySource: "client"` 时，该凭据必须保存真实上游 Key。
+
+bridge 会根据稳定的 User-Agent 自动识别 Harness 的 Chat Completions 请求，并只启用该客户端需要的传输兼容：保留工具调用历史中 assistant 的空 `content`，按白名单转发 Harness 的归因/身份请求头，同时发送 SSE 注释与空 delta 心跳，并在提交下游 SSE 响应前保留上游 HTTP 错误状态。
+
+部分兼容上游还需要两个路由选项：
+
+```json
+{
+  "upstream": {
+    "translateThinkingToReasoningEffort": true,
+    "maxOutputTokens": 131072
+  }
+}
+```
+
+`translateThinkingToReasoningEffort` 会移除上游不支持的顶层 `thinking` 扩展，同时保留 Harness 已发送且上游支持的 `reasoning_effort`；禁用思考时会映射为 `reasoning_effort: "none"`。`maxOutputTokens` 会把 `max_tokens` 和 `max_completion_tokens` 限制在已验证的上游范围内，应按对应路由发布或实测的上限配置。版本 2 配置可在 provider 层设置，并允许 model 层覆盖。
+
 #### 流式保活与睡眠唤醒恢复
 
-OpenAI Chat Completions 的 `stream: true` 请求会立即提交 SSE 头；之后每次连续空闲达到 `server.heartbeatIntervalMs`（默认 `15000`；`0` 禁用）时，bridge 都会发送一个协议有效、`delta` 为空的 `chat.completion.chunk`。每收到一个真实上游数据块，空闲计时就重新开始，后续流中间再次长时间静默时仍会继续保活。因此 ZCode 在首字节前和长流中间都能看到模型数据事件。Responses 路径保留立即发送的 `response.created` / `response.in_progress` 事件及注释心跳；Anthropic 路径在等待完整上游响应时保留注释心跳。
+OpenAI Chat Completions 的 `stream: true` 请求在每次连续空闲达到 `server.heartbeatIntervalMs`（默认 `15000`；`0` 禁用）时，会依次发送 SSE 注释和一个协议有效、`delta` 为空的 `chat.completion.chunk`。每收到一个真实上游数据块，空闲计时就重新开始，后续流中间再次长时间静默时仍会继续保活。ZCode 会立即收到响应头并在首个上游字节前看到数据活动；DeepSeek Harness 会等到上游成功返回 SSE 响应头后再提交下游响应，从而保留上游 HTTP 错误状态。Responses 路径保留立即发送的 `response.created` / `response.in_progress` 事件及注释心跳；Anthropic 路径在等待完整上游响应时保留注释心跳。
 
 MacBook 盒盖会挂起本地 bridge，并通常使已打开的 TCP 流失效；macOS 进入 clamshell sleep 后，本地进程本身无法继续执行。唤醒后，如果 Chat 上游发生传输错误，bridge 会把它作为下游连接失败暴露给 ZCode，使 ZCode 能执行自身的请求重试策略。bridge 不会阻止 macOS 睡眠，也不会自行重放已经部分消费的请求，以免造成重复模型计算或计费。若上游偶发忽略 `stream: true` 并返回普通 JSON chat completion，bridge 会将其转换为合法的下游 SSE；若 HTTP 200 的非 SSE 正文是错误或无效结构，则重置连接让 ZCode 重试。上游明确返回 HTTP 错误或空正文时，仍按协议返回流内 SSE 错误。
 

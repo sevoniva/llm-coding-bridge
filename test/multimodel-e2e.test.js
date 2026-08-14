@@ -113,7 +113,8 @@ async function main() {
       });
       const text = await response.text();
       responseBodies.push(text);
-      return { response, text, body: text && !text.startsWith("data:") ? JSON.parse(text) : null };
+      const contentType = response.headers.get("content-type") || "";
+      return { response, text, body: text && !contentType.includes("text/event-stream") ? JSON.parse(text) : null };
     }
 
     const health = await getJson("/health");

@@ -67,6 +67,40 @@ function testSanitizeChatPayload() {
     { role: "user", content: "after" },
   ]);
   assert.deepEqual(emptyAssistantHistory.messages[1], { role: "assistant", content: "" });
+
+  const preserved = sanitizeChatPayload(emptyAssistantHistory, {}, {
+    preserveEmptyAssistantContent: true,
+  });
+  assert.deepEqual(preserved.messages, emptyAssistantHistory.messages);
+
+  const enabledThinking = sanitizeChatPayload({
+    thinking: { type: "enabled" },
+    reasoning_effort: "high",
+  }, { translateThinkingToReasoningEffort: true });
+  assert.deepEqual(enabledThinking, { reasoning_effort: "high" });
+
+  const disabledThinking = sanitizeChatPayload({
+    thinking: { type: "disabled" },
+  }, { translateThinkingToReasoningEffort: true });
+  assert.deepEqual(disabledThinking, { reasoning_effort: "none" });
+
+  const passthroughThinking = sanitizeChatPayload({
+    thinking: { type: "enabled" },
+  });
+  assert.deepEqual(passthroughThinking, { thinking: { type: "enabled" } });
+
+  const capped = sanitizeChatPayload({
+    max_tokens: 256000,
+    max_completion_tokens: 200000,
+  }, { maxOutputTokens: 131072 });
+  assert.deepEqual(capped, {
+    max_tokens: 131072,
+    max_completion_tokens: 131072,
+  });
+  assert.deepEqual(
+    sanitizeChatPayload({ max_tokens: 4096 }, { maxOutputTokens: 131072 }),
+    { max_tokens: 4096 }
+  );
 }
 
 function testNormalJsonResponse() {

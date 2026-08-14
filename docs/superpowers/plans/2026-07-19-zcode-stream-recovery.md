@@ -505,7 +505,7 @@ Expected: version `0.6.2`, health `{"ok":true}`, package/config/health/models an
 launchd status OK. Compare SHA-256 hashes for modified runtime files between the
 working tree and global installation.
 
-- [ ] **Step 4: Exercise the real client-managed Finna path without printing the key**
+- [ ] **Step 4: Exercise the real client-managed upstream path without printing the key**
 
 Read the active ZCode provider key from its credential store into an environment
 variable without echoing it. Send a small non-stream request and a streaming

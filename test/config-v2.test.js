@@ -69,6 +69,10 @@ function expectInvalid(document, pattern, options, configPath = "/tmp/generic-co
 
 function testVersionTwoNormalization() {
   const document = v2Document();
+  document.providers[0].translateThinkingToReasoningEffort = true;
+  document.providers[0].maxOutputTokens = 131072;
+  document.providers[0].models[1].translateThinkingToReasoningEffort = false;
+  document.providers[0].models[1].maxOutputTokens = 65536;
   const before = clone(document);
   const config = normalizeConfigDocument(document, "/tmp/generic-config.json");
 
@@ -117,6 +121,10 @@ function testVersionTwoNormalization() {
   assert.equal(config.routes[0].heartbeatIntervalMs, 15000);
   assert.equal(config.routes[0].maxResponseBytes, 32 * 1024 * 1024);
   assert.equal(config.routes[0].maxSseEventBytes, 1024 * 1024);
+  assert.equal(config.routes[0].translateThinkingToReasoningEffort, true);
+  assert.equal(config.routes[1].translateThinkingToReasoningEffort, false);
+  assert.equal(config.routes[0].maxOutputTokens, 131072);
+  assert.equal(config.routes[1].maxOutputTokens, 65536);
   assert.deepEqual(config.effective.routes.map((route) => ({
     alias: route.alias,
     reliabilityPolicy: route.reliabilityPolicy,
@@ -344,6 +352,19 @@ function testShapeAndIdentifierValidation() {
     const document = v2Document();
     document.providers[0].models = [model];
     expectInvalid(document, /model/i);
+  }
+
+  for (const location of ["provider", "model"]) {
+    const document = v2Document();
+    if (location === "provider") document.providers[0].translateThinkingToReasoningEffort = "true";
+    else document.providers[0].models[0].translateThinkingToReasoningEffort = 1;
+    expectInvalid(document, /translateThinkingToReasoningEffort.*boolean/i);
+  }
+  for (const [location, value] of [["provider", 0], ["provider", 1.5], ["model", "10"]]) {
+    const document = v2Document();
+    if (location === "provider") document.providers[0].maxOutputTokens = value;
+    else document.providers[0].models[0].maxOutputTokens = value;
+    expectInvalid(document, /maxOutputTokens.*positive integer/i);
   }
 
   for (const [field, invalid] of [
