@@ -1,107 +1,151 @@
 # @sevoniva/llm-coding-bridge
 
-Local bridge for routing coding clients to one or more OpenAI-compatible models through a stable local endpoint.
+[![npm](https://img.shields.io/npm/v/@sevoniva/llm-coding-bridge)](https://www.npmjs.com/package/@sevoniva/llm-coding-bridge)
+[![CI](https://github.com/sevoniva/llm-coding-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/sevoniva/llm-coding-bridge/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-It exposes:
+A local, production-oriented protocol bridge for coding clients that need one stable OpenAI-compatible endpoint in front of one or more upstream models.
 
-- `/v1/responses` for Codex CLI and Codex Desktop
-- `/v1/messages` for Claude-compatible clients
-- `/v1/chat/completions` for OpenAI-compatible clients
-- `/v1/models` and `/health` for client checks
+The bridge keeps client configuration, model aliases, upstream model IDs, credentials, streaming behavior, and route health in one controlled local service. It does not modify client source code and it does not store upstream API keys in the bridge configuration.
 
-The bridge gives Codex, Claude Code, ZCode, and OpenAI-compatible clients one local endpoint while keeping model aliases, upstream IDs, and credentials isolated.
+## At a glance
+
+```
+Codex / Claude / OpenAI-compatible client
+                |
+                v
+      http://127.0.0.1:37629/v1
+                |
+      LLM Coding Bridge
+      - route by model alias
+      - normalize protocols
+      - enforce timeouts and limits
+      - emit streaming heartbeats
+                |
+                v
+        OpenAI-compatible upstream
+```
+
+Supported client surfaces:
+
+| Client or protocol | Bridge endpoint | Primary use |
+| --- | --- | --- |
+| Codex CLI / Codex Desktop | `/v1/responses` | Responses API |
+| Claude-compatible clients | `/v1/messages` | Anthropic-compatible messages |
+| OpenAI-compatible clients | `/v1/chat/completions` | Chat Completions |
+| Client discovery | `/v1/models`, `/health` | Model and service checks |
+
+The default listener is loopback-only. The service has no runtime dependencies and can be managed by macOS launchd.
 
 ## Install
 
+Requires Node.js 18 or newer.
+
 ```bash
-npm install -g @sevoniva/llm-coding-bridge
+npm install -g @sevoniva/llm-coding-bridge@latest
+llm-coding-bridge --help
 ```
 
-Run the v0.7 guided setup:
+## Quick start
+
+Run the guided setup. It creates `~/.llm-coding-bridge/config.json`, keeps credentials outside that file, and can optionally configure local clients.
 
 ```bash
 llm-coding-bridge setup
-```
-
-Then verify every configured alias and start the service:
-
-```bash
 llm-coding-bridge doctor --all-models
 llm-coding-bridge install-service
-llm-coding-bridge client add zcode --dry-run
-llm-coding-bridge client add zcode
+curl -fsS http://127.0.0.1:37629/health
 ```
 
-`setup` stores independent credential references for each model and never writes an upstream API key into the bridge config. Package installation and upgrades do not rewrite bridge or client configuration.
+Expected health response:
 
-### What's new in v0.7
+```json
+{"ok":true}
+```
 
-- Version 2 configuration separates client aliases, exact upstream model IDs, and credentials, including multiple models on one shared endpoint.
-- Pre-content failures can retry with bounded backoff and per-route cooldown; retries stop once text, reasoning, refusal, or tool output has been emitted.
-- Chat, Responses, and Anthropic-compatible routes share phase-aware deadlines and route health while preserving protocol-specific streaming behavior.
-- Empty assistant history entries are removed before `/chat/completions` forwarding, preventing upstream `Assistant message content ... cannot be empty` errors. Assistant entries carrying tool calls, reasoning, refusal, function calls, or audio remain intact.
-- ZCode 3.x configuration is managed through previewable add/remove/rollback commands. Only the bridge-owned provider is changed.
-- `/admin` exposes redacted route health and request timelines on the local bridge.
+The local base URL for clients is:
 
-## Configure
+```
+http://127.0.0.1:37629/v1
+```
 
-The v0.7 command is:
+For a background service, prefer a command-backed key (for example, macOS Keychain) instead of relying on a shell startup file:
+
+```json
+{
+  "upstream": {
+    "apiKeyCommand": {
+      "command": "/usr/bin/security",
+      "args": ["find-generic-password", "-a", "LLM_API_KEY", "-s", "llm-coding-bridge", "-w"]
+    }
+  }
+}
+```
+
+Package upgrades do not rewrite the bridge configuration or client profiles. After changing configuration or upgrading the package, run:
 
 ```bash
-llm-coding-bridge setup
+llm-coding-bridge restart-service
+llm-coding-bridge status
 ```
 
-`llm-coding-bridge init` remains available as an advanced version 1 compatibility command.
+## DeepSeek Harness integration
 
-The config is written to `~/.llm-coding-bridge/config.json` by default (override with `--out`). All commands read that file by default; a `llm-coding-bridge.config.json` in the current directory takes precedence, and `--config` overrides both.
+DeepSeek Harness is supported as a custom provider. No Harness source change is required, and the built-in `deepseek-official` provider remains available alongside the bridge route.
 
-### Port migration in v0.5.0
+Create a separate `openai-completions` provider with:
 
-New configurations use port `37629` by default. The port remains configurable and is not reserved exclusively for this project.
+- `baseURL: http://127.0.0.1:37629/v1`
+- the bridge model alias as the selected model
+- a dedicated credential reference for this route
+- `supportsReasoningEffort: true` when the selected upstream accepts `reasoning_effort`
 
-Package upgrades do not rewrite existing configuration files. To move an existing installation from `18080` to `37629`:
+Example provider shape:
 
-1. Set `server.port` to `37629` in the bridge config.
-2. Update each client Base URL to use port `37629`.
-3. Run `llm-coding-bridge restart-service`, then verify `http://127.0.0.1:37629/health`.
-
-### Security boundaries in v0.6.0
-
-- A non-loopback `server.host` now requires `server.localToken`; unsafe configurations are rejected before the service starts.
-- Configs, client profiles, and their backups written by the CLI use mode `0600`. Newly created private config directories use mode `0700`.
-- Existing symbolic links used for client configuration are preserved; the resolved regular-file target is updated atomically and restricted to mode `0600`.
-- The upstream deadline covers the complete response body. Responses are capped at 32 MiB and individual SSE events at 1 MiB by default.
-- Streaming honors downstream backpressure, limits each drain wait to 30 seconds, and accepts both LF and CRLF SSE framing.
-- POST API routes require `application/json` and reject browser requests from non-loopback origins. CLI and desktop clients that do not send an `Origin` header remain compatible.
-- GitHub Actions used by CI and package publication are pinned to verified commit SHAs.
-
-Package upgrades do not rewrite existing local files. For an existing installation, review secret-bearing files once with `chmod 600 <file>`.
-
-The guide asks for the local listen address, local port, upstream Base URL, upstream model, API key source, temperature, and optional client setup:
-
-```text
-Listen host / 本地监听地址 [127.0.0.1]:
-Listen port / 本地监听端口 [37629]:
-Provider name / 上游服务名称 [Custom Provider]:
-Upstream base URL / 上游 Base URL:
-Upstream model / 上游模型名称:
-API key source (local/client) / API Key 来源（local/client）[local]:
-API key environment variable / API Key 环境变量 [LLM_API_KEY]:
-API key command (optional) / API Key 读取命令（可选）:
-Temperature / 采样温度 [0]:
-Local auth token (required for non-loopback hosts) / 本地鉴权 token（非 loopback 必填）:
-Configure local clients now? / 是否现在配置本地客户端？[y/N]:
+```yaml
+agent-default-model:
+  provider: local-bridge
+  model: your-model
+llm-pi-ai:
+  providers:
+    local-bridge:
+      displayName: Local Bridge
+      api: openai-completions
+      baseURL: http://127.0.0.1:37629/v1
+      apiKeyEnv: LOCAL_BRIDGE_API_KEY
+      compat:
+        thinkingFormat: openai
+        supportsReasoningEffort: true
+      models:
+        - id: your-model
 ```
 
-Use `local` when the bridge reads the upstream key from an environment variable or command. Use `client` when a local provider switcher manages the key and sends it with each request.
+The bridge applies client-specific transport handling at the boundary:
 
-Client setup defaults to `No`. When enabled, the guide can update Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`.
+- preserves empty assistant `content` in tool-call history;
+- forwards only the documented Harness identity and attribution headers;
+- emits an SSE comment plus an empty delta heartbeat during idle periods;
+- waits for successful upstream SSE headers so upstream HTTP errors remain HTTP errors;
+- normalizes embedded error envelopes that report a real 4xx/5xx status inside an HTTP 200 response.
 
-The bridge config does not store an upstream API key. In client-key mode, generated Claude or Codex client configuration may store that key as the client bearer token; generated files and backups use mode `0600`.
+For upstream gateways that reject the top-level `thinking` extension or impose an output limit, configure the route:
 
-For complete setup instructions, see [Configuration Guide](docs/configuration.md).
+```json
+{
+  "upstream": {
+    "translateThinkingToReasoningEffort": true,
+    "maxOutputTokens": 131072
+  }
+}
+```
 
-The generated file looks like this:
+`translateThinkingToReasoningEffort` removes the unsupported top-level field, preserves an explicit client `reasoning_effort`, and maps disabled thinking to `reasoning_effort: "none"`. `maxOutputTokens` caps numeric `max_tokens` and `max_completion_tokens`. In version 2 configuration, set either option on a provider or override it on an individual model.
+
+## Configuration
+
+### Version 1: one or several upstreams
+
+A minimal configuration uses one upstream:
 
 ```json
 {
@@ -119,534 +163,241 @@ The generated file looks like this:
 }
 ```
 
-Upstream API keys are not stored in the bridge config:
-
-```bash
-export LLM_API_KEY="..."
-```
-
-Client-managed key mode writes this instead:
-
-```json
-{
-  "upstream": {
-    "name": "Custom Provider",
-    "baseUrl": "https://api.example.com/v1",
-    "model": "model-name",
-    "apiKeySource": "client",
-    "temperature": 0
-  }
-}
-```
-
-## Multiple upstreams
-
-Route requests to different providers by the `model` field the client sends. Use `upstreams` instead of `upstream`:
+For multiple routes, use `upstreams`. Requests are matched by the client `model` field; an unknown model returns `404 model_not_found` instead of silently selecting a different route.
 
 ```json
 {
   "server": { "host": "127.0.0.1", "port": 37629 },
   "upstreams": [
-    { "name": "OpenAI", "model": "gpt-4o", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" },
-    { "name": "Other", "model": "other-model", "baseUrl": "https://api.other.com/v1", "apiKeyEnv": "OTHER_API_KEY" }
+    {
+      "name": "Fast",
+      "baseUrl": "https://fast.example.com/v1",
+      "model": "coding-fast",
+      "apiKeyEnv": "FAST_API_KEY"
+    },
+    {
+      "name": "Strong",
+      "baseUrl": "https://strong.example.com/v1",
+      "model": "coding-strong",
+      "apiKeyEnv": "STRONG_API_KEY"
+    }
   ]
 }
 ```
 
-A request with `model: "gpt-4o"` routes to OpenAI; `model: "other-model"` routes to Other. With multiple upstreams configured, a model that matches none of them returns `404 model_not_found` rather than silently routing to the wrong provider. With a single `upstream`, the client's model field is rewritten to the configured one (backward compatible). `/v1/models` lists all configured models.
+### Version 2: aliases, providers, and credentials
 
-## Local auth
-
-By default the bridge listens on `127.0.0.1` and does not require auth. Set `server.localToken` to require a token. A non-loopback host is rejected unless this value is configured:
+Version 2 separates the client-facing alias, upstream model ID, provider endpoint, and credential source:
 
 ```json
 {
-  "server": { "host": "127.0.0.1", "port": 37629, "localToken": "your-secret" }
-}
-```
-
-Clients must then send `Authorization: Bearer your-secret` or `x-api-key: your-secret`. `/health` remains unauthenticated. Comparison is constant-time.
-
-## Upstream response limits
-
-`upstream.timeoutMs` applies to the complete upstream response, including streaming bodies. The default is 10 minutes. `upstream.maxResponseBytes` defaults to 32 MiB, and `upstream.maxSseEventBytes` defaults to 1 MiB:
-
-```json
-{
-  "upstream": {
-    "timeoutMs": 600000,
-    "maxResponseBytes": 33554432,
-    "maxSseEventBytes": 1048576
-  }
-}
-```
-
-All three values must be positive integers. The response limit is cumulative across JSON, raw streaming, and parsed SSE modes.
-
-## API key caching
-
-`apiKeyCommand` results are cached in-process for 10 minutes by default to avoid spawning a command on every request. Override with `upstream.apiKeyCacheTtlMs`; set it to `0` to disable caching and resolve the key on every request. Each upstream in a multi-upstream config has an independent cache. If the upstream returns `401`, the cached key is dropped immediately so the next request re-resolves — this lets a rotated key recover without restarting the bridge.
-
-To let a client-side router manage upstream keys, set `apiKeySource` to `client` and remove `apiKeyEnv` / `apiKeyCommand`:
-
-```json
-{
-  "upstream": {
-    "name": "Custom Provider",
-    "baseUrl": "https://api.example.com/v1",
-    "model": "model-name",
-    "apiKeySource": "client"
-  }
-}
-```
-
-The bridge forwards the client request key to the upstream. It reads `x-upstream-api-key` first, then `Authorization: Bearer ...`, then `x-api-key`. This is useful when tools such as provider switchers own the real upstream key. If `server.localToken` is enabled, send the local token in `Authorization` and the upstream key in `x-upstream-api-key`.
-
-For generated Codex or Claude configs in client-key mode, set the client token to the real upstream key, or let the provider switcher manage the client config. To run `doctor` with `apiKeySource: "client"`, provide a probe key:
-
-```bash
-LLM_CODING_BRIDGE_CLIENT_API_KEY="..." llm-coding-bridge doctor
-```
-
-For background services, prefer a command-backed key so launchd does not depend on shell environment variables:
-
-```json
-{
-  "upstream": {
-    "apiKeyCommand": {
-      "command": "/usr/bin/security",
-      "args": ["find-generic-password", "-a", "LLM_API_KEY", "-s", "llm-coding-bridge", "-w"]
+  "version": 2,
+  "providers": [
+    {
+      "id": "local-provider",
+      "name": "Local Provider",
+      "baseUrl": "https://api.example.com/v1",
+      "translateThinkingToReasoningEffort": true,
+      "maxOutputTokens": 131072,
+      "models": [
+        {
+          "alias": "coding-strong",
+          "upstreamModel": "provider-model-id",
+          "credentialRef": "coding-strong-key"
+        }
+      ]
+    }
+  ],
+  "credentials": {
+    "coding-strong-key": {
+      "source": "env",
+      "env": "LLM_API_KEY"
     }
   }
 }
 ```
 
-## ZCode and provider compatibility
+Use `llm-coding-bridge config migrate --dry-run` before migrating an existing version 1 file. Use `llm-coding-bridge config show --effective` to inspect the resolved route without printing credential values.
 
-OpenAI-compatible endpoints do not always handle client extension fields and non-streaming responses consistently. The bridge provides compatibility handling for ZCode and other OpenAI-compatible clients.
+### Credential sources
 
-Enable request cleanup when an upstream rejects `chat_template_kwargs`:
+The bridge supports:
 
-```json
-{
-  "upstream": {
-    "stripChatTemplateKwargs": true
-  }
-}
-```
+- `apiKeyEnv`: read a key from an environment variable;
+- `apiKeyCommand`: resolve a key from a command or secret manager;
+- `apiKeySource: "client"`: forward the key supplied by a local provider switcher or client.
 
-This option removes `chat_template_kwargs` from the top-level request and from `extra_body.chat_template_kwargs`. All other request fields are preserved.
+For client-provided keys, the bridge checks `x-upstream-api-key`, then `Authorization: Bearer ...`, then `x-api-key`. If local authentication is enabled, put the local token in `Authorization` and the upstream key in `x-upstream-api-key`.
 
-For a non-streaming request, the bridge also accepts an upstream response delivered as a complete SSE sequence and converts it into a standard OpenAI `chat.completion` JSON object. This keeps ZCode context compaction and other `stream: false` workflows compatible with endpoints that use SSE framing for non-streaming responses. Response normalization is limited to non-streaming requests; streaming response bodies pass through unchanged. Request cleanup applies to both modes when enabled.
+Keys resolved from `apiKeyCommand` are cached in memory for 10 minutes by default. Configure `upstream.apiKeyCacheTtlMs` or set it to `0` to disable caching. A 401 response invalidates the cached key immediately.
 
-### DeepSeek Harness compatibility
+## Protocol and reliability behavior
 
-DeepSeek Harness can add the bridge as a custom provider without a source patch and without replacing its built-in `deepseek-official` route. Add an `openai-completions` provider with `baseURL` set to `http://127.0.0.1:37629/v1`, select the bridge model alias, and give that custom route its own credential reference. When the bridge route uses `apiKeySource: "client"`, the custom provider credential must contain the real upstream key.
+The bridge is deliberately conservative about retries: it retries only before semantic output has been observed. Once text, reasoning, refusal, function calls, tool calls, or audio has been emitted, the request is not replayed.
 
-The bridge detects Harness Chat Completions requests from their stable User-Agent and applies only the transport compatibility that client needs: it retains empty assistant `content` in tool-call history, forwards the Harness attribution/identity header allowlist, emits comment and empty-delta heartbeats, and preserves upstream HTTP errors before the downstream SSE response is committed.
+It also provides:
 
-Some compatible upstreams need two additional route settings:
+- independent header, first-data, idle, total, and streaming deadlines;
+- bounded `Retry-After` handling and per-route cooldown;
+- protocol-specific Responses, Chat Completions, and Anthropic-compatible streaming;
+- SSE heartbeats that do not count as upstream model output;
+- conversion of valid non-SSE JSON responses to SSE for streaming clients;
+- aggregation of complete SSE responses for non-streaming Chat Completions;
+- request-body, response-body, and SSE-event size limits;
+- backpressure-aware streaming and connection cleanup.
 
-```json
-{
-  "upstream": {
-    "translateThinkingToReasoningEffort": true,
-    "maxOutputTokens": 131072
-  }
-}
-```
+For Chat Completions, `server.heartbeatIntervalMs` defaults to 15 seconds. Set it to `0` to disable downstream heartbeats.
 
-`translateThinkingToReasoningEffort` removes the unsupported top-level `thinking` extension while retaining Harness's supported `reasoning_effort`; disabled thinking maps to `reasoning_effort: "none"`. `maxOutputTokens` caps `max_tokens` and `max_completion_tokens` at the verified upstream limit. Set the cap to the limit published or tested for your route. In version 2 configuration, either option can be set at provider level and overridden per model.
+## Client setup
 
-### Streaming keepalive and sleep/wake recovery
+### Codex
 
-For OpenAI Chat Completions with `stream: true`, the bridge emits an SSE comment followed by a protocol-valid empty `chat.completion.chunk` after each idle `server.heartbeatIntervalMs` (default `15000`; `0` disables). The idle timer resets whenever a real upstream chunk arrives and continues for later gaps. ZCode receives headers immediately and sees data activity before the first upstream byte; DeepSeek Harness waits for successful upstream SSE headers so an upstream HTTP error can remain an HTTP error. Responses keeps its immediate `response.created` / `response.in_progress` events plus comment heartbeat, and Anthropic keeps its comment heartbeat while its upstream response is buffered.
-
-Closing a MacBook lid suspends the local bridge and normally breaks open TCP streams; no local process can keep executing while macOS is in clamshell sleep. After wake, an upstream Chat transport failure is exposed as a downstream connection failure so ZCode can apply its normal request retry policy. The bridge does not disable macOS sleep and does not replay a partially consumed request, which avoids duplicate model work or billing. If an upstream intermittently ignores `stream: true` and returns a normal JSON chat completion, the bridge converts it to valid downstream SSE. An invalid or error-bearing HTTP 200 non-SSE body resets the connection so ZCode can retry; explicit upstream HTTP errors and empty responses remain protocol-level SSE errors.
-
-## Run
+Generate a dedicated profile:
 
 ```bash
-llm-coding-bridge doctor
-llm-coding-bridge doctor --tools
-llm-coding-bridge serve
+llm-coding-bridge codex-profile --name bridge
+codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
 ```
 
-Then point clients at:
-
-```text
-http://127.0.0.1:37629/v1
-```
-
-For a local service check that does not call the upstream model:
-
-```bash
-llm-coding-bridge status
-```
-
-`doctor --tools` verifies Codex-style function, freeform, and tool-search calls through the bridge.
-
-## Codex
-
-Print the Codex template:
+Or print the template:
 
 ```bash
 llm-coding-bridge template codex
 ```
 
-Minimal Codex config:
-
-```toml
-model = "your-model"
-model_provider = "llm-coding-bridge"
-model_reasoning_effort = "none"
-disable_response_storage = true
-# `llm-coding-bridge codex-profile` generates model_catalog_json automatically.
-
-[model_providers.llm-coding-bridge]
-name = "LLM Coding Bridge"
-base_url = "http://127.0.0.1:37629/v1"
-wire_api = "responses"
-requires_openai_auth = true
-experimental_bearer_token = "local"  # use server.localToken, or the upstream key when apiKeySource=client
-request_max_retries = 1
-stream_max_retries = 1
-stream_idle_timeout_ms = 600000
-```
-
-Use this as a separate Codex profile if you do not want to change your default Codex Desktop setup.
-
-For Codex CLI, generate a separate profile:
-
-```bash
-llm-coding-bridge codex-profile --name bridge
-codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
-```
-
-Use `--force` to overwrite an existing generated profile. Existing generated files are backed up first.
-
-The check should show:
+The generated profile uses:
 
 ```text
-provider: llm-coding-bridge
+base_url = http://127.0.0.1:37629/v1
+wire_api = responses
 ```
 
-If it shows `provider: openai`, Codex did not load the profile. Confirm the file is named exactly `~/.codex/bridge.config.toml`.
+### Claude-compatible clients
 
-For Codex Desktop, keep the bridge running in the background. On macOS, install the launchd service:
+The bridge exposes `/v1/messages` and `/v1/messages/count_tokens`:
 
 ```bash
-llm-coding-bridge install-service
-curl http://127.0.0.1:37629/health
+export ANTHROPIC_BASE_URL="http://127.0.0.1:37629"
+export ANTHROPIC_AUTH_TOKEN="local"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="your-model"
 ```
 
-Then back up `~/.codex/config.toml`, place the same provider block and top-level `model` / `model_provider` values in `~/.codex/config.toml`, and restart Codex Desktop. The `init` guide can do this after an explicit Desktop confirmation.
-
-Print the Codex Desktop template:
-
-```bash
-llm-coding-bridge template codex-desktop
-```
-
-Use this when you want the bridge as the default provider for Codex Desktop and for CLI sessions that do not pass `--profile`.
-
-## Claude
-
-Print the Claude template:
+Print the generated template with:
 
 ```bash
 llm-coding-bridge template claude
 ```
 
-Use the local Anthropic-compatible endpoint:
+### Generic OpenAI-compatible clients
 
-```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:37629"
-export ANTHROPIC_AUTH_TOKEN="local"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="your-model"
+Use:
+
+```
+Base URL: http://127.0.0.1:37629/v1
+Endpoint: /chat/completions
+Model: one of the aliases returned by /v1/models
 ```
 
-The bridge exposes `/v1/messages` and `/v1/messages/count_tokens`.
+## macOS service management
 
-Persistent Claude Code settings can be written by `init`. If `~/.claude/settings.json` exists, it is backed up before the `env` object is merged.
-
-For an isolated Claude Code check that does not read existing user settings:
-
-```bash
-ANTHROPIC_BASE_URL="http://127.0.0.1:37629" \
-ANTHROPIC_AUTH_TOKEN="local" \
-claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
-```
-
-## macOS autostart
+`llm-coding-bridge install-service` installs a per-user launchd agent at `~/Library/LaunchAgents`. It starts when the user session loads and is configured to restart after an unexpected exit.
 
 ```bash
 llm-coding-bridge install-service
-```
-
-Restart it after package or config changes:
-
-```bash
+launchctl list | grep llm-coding-bridge
+llm-coding-bridge status
+llm-coding-bridge logs --lines 80
 llm-coding-bridge restart-service
-```
-
-Remove it:
-
-```bash
 llm-coding-bridge uninstall-service
 ```
 
-Logs are written to:
+The service cannot keep an open request alive while macOS is asleep. After wake, clients should retry according to their normal transport policy.
 
-```text
-~/.llm-coding-bridge/logs/
+## Local authentication and security
+
+The default loopback listener does not require a token. For a shared or non-loopback listener, set `server.localToken`:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 37629,
+    "localToken": "replace-with-a-random-secret"
+  }
+}
 ```
 
-Print recent logs:
+Clients can send `Authorization: Bearer <token>` or `x-api-key: <token>`. `/health` remains unauthenticated. Non-loopback listeners are rejected without a local token.
+
+Security defaults:
+
+- generated config, client profiles, and backups use private file permissions;
+- request bodies are capped at 10 MB by default;
+- upstream responses are subject to complete-response and cumulative-size limits;
+- API keys are never committed by the project and should not be placed in the bridge config;
+- command-backed keys should use the object form to avoid shell interpretation;
+- the package has no install script and does not execute network code during installation.
+
+## Diagnostics
+
+| Symptom | Check |
+| --- | --- |
+| `ECONNREFUSED 127.0.0.1:37629` | Run `llm-coding-bridge status`, then `llm-coding-bridge restart-service`. |
+| `404 model_not_found` | Compare the client model with `curl http://127.0.0.1:37629/v1/models`. |
+| `401` from the upstream | Re-check the selected credential source; command-backed keys are refreshed after a 401. |
+| Harness receives a stream error as success | Confirm the custom provider uses the bridge `baseURL` and keep the built-in provider separate. |
+| Requests stall during long thinking | Keep heartbeats enabled and set `maxOutputTokens` to the tested upstream limit. |
+| Works in a shell but not after login | Use `apiKeyCommand` or a launchd-visible credential source instead of a shell-only environment variable. |
+
+## Development
 
 ```bash
-llm-coding-bridge logs --lines 80
+git clone https://github.com/sevoniva/llm-coding-bridge.git
+cd llm-coding-bridge
+npm ci
+npm run verify
 ```
 
-## 中文说明
+The verification gate runs linting, the complete test suite, security and secret scans, the repository and release gates, dependency audit, and an npm pack dry run.
 
-`@sevoniva/llm-coding-bridge` 是一个本地 Node 中转服务，用于把 OpenAI-compatible `/chat/completions` 上游接入 Codex CLI、Codex Desktop 和 Claude 类客户端。
+Further reference: [Configuration Guide](docs/configuration.md), [release notes](docs/releases/), and [MIT License](LICENSE).
 
-它提供：
+## 中文快速指南
 
-- `/v1/responses`：给 Codex 使用
-- `/v1/messages`：给 Claude 类客户端使用
-- `/v1/chat/completions`：给 OpenAI-compatible 客户端使用
-- `/v1/models` 和 `/health`：用于客户端检测
+`@sevoniva/llm-coding-bridge` 是一个本地协议桥接服务，把 Codex、Claude 类客户端、DeepSeek Harness 和其他 OpenAI-compatible 客户端统一接到稳定的本地 `/v1` 端点，再按模型别名转发到一个或多个上游。它不需要修改客户端源码，默认只监听本机回环地址，也不会把上游 API Key 写进 bridge 配置。
 
-它通过一个稳定的本地端点，为 Codex、Claude Code、ZCode 和 OpenAI-compatible 客户端路由一个或多个模型，并隔离客户端别名、上游模型 ID 和凭据。
-
-安装：
+安装和启动：
 
 ```bash
-npm install -g @sevoniva/llm-coding-bridge
-```
-
-运行 v0.7 配置向导：
-
-```bash
+npm install -g @sevoniva/llm-coding-bridge@latest
 llm-coding-bridge setup
-```
-
-完成后验证所有模型并配置 ZCode：
-
-```bash
 llm-coding-bridge doctor --all-models
-llm-coding-bridge client add zcode --dry-run
-llm-coding-bridge client add zcode
+llm-coding-bridge install-service
+curl -fsS http://127.0.0.1:37629/health
 ```
 
-`setup` 为每个模型保存独立的凭据引用，不会把上游 API Key 写入 bridge 配置。安装或升级 npm 包不会改写已有 bridge 或客户端配置。`llm-coding-bridge init` 继续作为 version 1 高级兼容命令保留。
+Harness 配置重点：
 
-### v0.7 主要变化
+- 新增独立的 `openai-completions` 自定义 Provider；
+- `baseURL` 使用 `http://127.0.0.1:37629/v1`；
+- 选择 bridge 暴露的模型别名；
+- 使用独立凭据引用；
+- 保留内置的 `deepseek-official` Provider，不需要修改 Harness 源码。
 
-- version 2 配置分离客户端别名、真实上游模型 ID 和凭据，支持同一上游端点的多模型路由。
-- 仅在尚未产生文本、推理、拒答或工具输出前执行有限重试，并按路由独立冷却。
-- 空字符串、纯空白、`null` 或空数组的 assistant 历史会在转发 `/chat/completions` 前被清理，避免 `Assistant message content ... cannot be empty`；包含 tool call、推理、拒答、函数调用或音频的消息仍会保留。
-- ZCode 3.x 支持可预览的 add/remove/rollback，只修改 bridge 自己管理的 provider。
-- 本地 `/admin` 提供脱敏后的路由健康状态和请求时间线。
+如果上游不接受顶层 `thinking` 或有输出上限，在 bridge 路由中配置 `translateThinkingToReasoningEffort` 和 `maxOutputTokens`。完整配置、协议行为和安全边界见 [Configuration Guide](docs/configuration.md)。
 
-配置默认写入 `~/.llm-coding-bridge/config.json`（可用 `--out` 覆盖）。所有命令默认读取该文件；当前目录存在 `llm-coding-bridge.config.json` 时优先使用，`--config` 优先级最高。
-
-### v0.5.0 端口迁移
-
-新生成的配置默认使用端口 `37629`。该端口仍可配置，项目不声明独占此端口。
-
-升级软件包不会改写已有配置。将现有安装从 `18080` 迁移到 `37629` 时：
-
-1. 在 bridge 配置中把 `server.port` 改为 `37629`。
-2. 将各客户端 Base URL 的端口同步改为 `37629`。
-3. 执行 `llm-coding-bridge restart-service`，再访问 `http://127.0.0.1:37629/health` 验证服务。
-
-### v0.6.0 安全边界
-
-- `server.host` 使用非 loopback 地址时必须配置 `server.localToken`，否则服务拒绝启动。
-- CLI 写入的配置、客户端 profile 及备份固定为 `0600`；新建的私有配置目录为 `0700`。
-- 如果客户端配置使用符号链接，bridge 会保留链接，原子更新其指向的普通文件，并将目标文件权限收紧为 `0600`。
-- 上游超时覆盖完整响应正文。响应总量默认上限 32 MiB，单个 SSE 事件默认上限 1 MiB。
-- 流式转发遵循下游背压，单次 drain 等待上限为 30 秒，并同时支持 LF 与 CRLF SSE 分帧。
-- POST API 只接受 `application/json`，并拒绝来自非 loopback Origin 的浏览器请求；不发送 `Origin` 的 CLI 和桌面客户端保持兼容。
-- CI 和 npm 发布工作流使用已验证的完整 commit SHA。
-
-升级软件包不会改写已有本地文件。已有安装应对包含凭据的文件执行一次 `chmod 600 <file>` 检查。
-
-`init` 会在 bridge 配置和检测之后询问是否配置 Claude Code、Codex CLI profile 和 Codex Desktop。默认不写客户端配置；确认写入前会先备份已有文件，备份后缀为 `.bak-YYYYMMDD-HHMMSS`。Codex Desktop 会改变默认 provider，需要单独确认。
-
-bridge 配置不保存上游 API Key。在 client key 模式下，自动生成的 Claude 或 Codex 客户端配置可能把真实上游 Key 保存为客户端 bearer token；生成文件和备份使用 `0600` 权限。
-
-检测配置：
-
-```bash
-export LLM_API_KEY="..."
-llm-coding-bridge doctor
-llm-coding-bridge doctor --tools
-llm-coding-bridge status
-```
-
-启动服务：
-
-```bash
-llm-coding-bridge serve
-```
-
-Codex 的 `base_url` 配为：
-
-```text
-http://127.0.0.1:37629/v1
-```
-
-Codex CLI 建议用独立 profile，避免影响默认配置：
-
-```bash
-llm-coding-bridge codex-profile --name bridge
-codex --profile bridge exec --skip-git-repo-check "Reply exactly: OK"
-```
-
-已有生成文件时使用 `--force` 覆盖；覆盖前会先备份。
-
-输出中应看到：
-
-```text
-provider: llm-coding-bridge
-```
-
-如果仍是 `provider: openai`，说明 profile 没有加载。检查文件名是否为 `~/.codex/bridge.config.toml`。
-
-Codex Desktop 使用前要保证 bridge 在后台运行。macOS 可安装 launchd 服务：
+macOS 自启动：
 
 ```bash
 llm-coding-bridge install-service
-curl http://127.0.0.1:37629/health
-```
-
-配置或包升级后重启服务：
-
-```bash
-llm-coding-bridge restart-service
-```
-
-然后备份 `~/.codex/config.toml`，把同一段 provider 配置和顶部的 `model` / `model_provider` 写入 `~/.codex/config.toml`，修改后重启桌面端。也可以在 `init` 中确认后自动写入。
-
-输出 Codex Desktop 模板：
-
-```bash
-llm-coding-bridge template codex-desktop
-```
-
-需要把 bridge 配成 Codex Desktop 默认 provider 时使用这个模板。它也会影响没有使用 `--profile` 的 Codex CLI 会话。
-
-Claude 类客户端配置：
-
-```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:37629"
-export ANTHROPIC_AUTH_TOKEN="local"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="your-model"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="your-model"
-```
-
-如果只想临时验证，不读取现有 `~/.claude/settings.json`：
-
-```bash
-ANTHROPIC_BASE_URL="http://127.0.0.1:37629" \
-ANTHROPIC_AUTH_TOKEN="local" \
-claude --bare --setting-sources local -p --model sonnet "Reply exactly: OK"
-```
-
-长期使用建议安装 macOS 自启动。API Key 可以由 bridge 通过环境变量/Keychain 命令读取，也可以由本地 provider switcher 管理并随请求传入。
-
-查看最近日志：
-
-```bash
+llm-coding-bridge status
 llm-coding-bridge logs --lines 80
 ```
 
-多上游路由：用 `upstreams` 数组替代 `upstream`，按客户端请求的 `model` 字段路由到不同上游。多上游时未知 model 返回 404，不静默回退；单上游时客户端 model 字段被改写为配置值（向后兼容）。详见上方 "Multiple upstreams"。
+该命令安装当前用户的 launchd 服务：登录时启动，异常退出自动拉起；macOS 睡眠时已建立的流式连接仍可能中断。
 
-本地鉴权：配置 `server.localToken` 后，请求须带 `Authorization: Bearer <token>` 或 `x-api-key: <token>`。使用非 loopback 监听地址时该配置为必填项。
+## License
 
-上游响应限制：`upstream.timeoutMs` 默认 10 分钟并覆盖完整响应正文；`upstream.maxResponseBytes` 默认 32 MiB；`upstream.maxSseEventBytes` 默认 1 MiB。三项都必须是正整数。
-
-API Key 缓存：`apiKeyCommand` 结果默认缓存 10 分钟，用 `upstream.apiKeyCacheTtlMs` 覆盖，设 `0` 禁用。上游返回 401 时缓存立即失效，下次请求重新解析，轮换的 key 无需重启即可恢复。
-
-如果希望由客户端路由工具管理上游 Key，把 `apiKeySource` 设为 `client`，并删除 `apiKeyEnv` / `apiKeyCommand`：
-
-```json
-{
-  "upstream": {
-    "name": "Custom Provider",
-    "baseUrl": "https://api.example.com/v1",
-    "model": "model-name",
-    "apiKeySource": "client"
-  }
-}
-```
-
-bridge 会把客户端请求里的 key 转发给上游。读取顺序为：`x-upstream-api-key`、`Authorization: Bearer ...`、`x-api-key`。如果启用了 `server.localToken`，本地 token 放 `Authorization`，上游 key 放 `x-upstream-api-key`。
-
-### ZCode 与上游兼容
-
-部分 OpenAI-compatible 上游不接受客户端扩展字段，或在 `stream: false` 请求中仍使用 SSE 响应格式。bridge 为 ZCode 和其他 OpenAI-compatible 客户端提供这两类兼容处理。
-
-上游不接受 `chat_template_kwargs` 时，启用请求字段清理：
-
-```json
-{
-  "upstream": {
-    "stripChatTemplateKwargs": true
-  }
-}
-```
-
-启用后，bridge 仅移除请求顶层的 `chat_template_kwargs` 和 `extra_body.chat_template_kwargs`，其余字段保持不变。该清理同时适用于流式和非流式请求。
-
-对于 `stream: false` 请求，如果上游返回完整 SSE 序列，bridge 会将其聚合为标准 OpenAI `chat.completion` JSON 对象，以兼容 ZCode 的上下文压缩和摘要流程。响应归一化仅作用于非流式请求；流式响应正文仍原样透传。
-
-#### DeepSeek Harness 兼容
-
-DeepSeek Harness 无需修改客户端源码，也无需替换内置的 `deepseek-official` 路由。新增一个 `openai-completions` 自定义 Provider，将 `baseURL` 指向 `http://127.0.0.1:37629/v1`，模型选择 bridge 的模型别名，并为这条自定义线路使用独立的凭据引用。当 bridge 路由使用 `apiKeySource: "client"` 时，该凭据必须保存真实上游 Key。
-
-bridge 会根据稳定的 User-Agent 自动识别 Harness 的 Chat Completions 请求，并只启用该客户端需要的传输兼容：保留工具调用历史中 assistant 的空 `content`，按白名单转发 Harness 的归因/身份请求头，同时发送 SSE 注释与空 delta 心跳，并在提交下游 SSE 响应前保留上游 HTTP 错误状态。
-
-部分兼容上游还需要两个路由选项：
-
-```json
-{
-  "upstream": {
-    "translateThinkingToReasoningEffort": true,
-    "maxOutputTokens": 131072
-  }
-}
-```
-
-`translateThinkingToReasoningEffort` 会移除上游不支持的顶层 `thinking` 扩展，同时保留 Harness 已发送且上游支持的 `reasoning_effort`；禁用思考时会映射为 `reasoning_effort: "none"`。`maxOutputTokens` 会把 `max_tokens` 和 `max_completion_tokens` 限制在已验证的上游范围内，应按对应路由发布或实测的上限配置。版本 2 配置可在 provider 层设置，并允许 model 层覆盖。
-
-#### 流式保活与睡眠唤醒恢复
-
-OpenAI Chat Completions 的 `stream: true` 请求在每次连续空闲达到 `server.heartbeatIntervalMs`（默认 `15000`；`0` 禁用）时，会依次发送 SSE 注释和一个协议有效、`delta` 为空的 `chat.completion.chunk`。每收到一个真实上游数据块，空闲计时就重新开始，后续流中间再次长时间静默时仍会继续保活。ZCode 会立即收到响应头并在首个上游字节前看到数据活动；DeepSeek Harness 会等到上游成功返回 SSE 响应头后再提交下游响应，从而保留上游 HTTP 错误状态。Responses 路径保留立即发送的 `response.created` / `response.in_progress` 事件及注释心跳；Anthropic 路径在等待完整上游响应时保留注释心跳。
-
-MacBook 盒盖会挂起本地 bridge，并通常使已打开的 TCP 流失效；macOS 进入 clamshell sleep 后，本地进程本身无法继续执行。唤醒后，如果 Chat 上游发生传输错误，bridge 会把它作为下游连接失败暴露给 ZCode，使 ZCode 能执行自身的请求重试策略。bridge 不会阻止 macOS 睡眠，也不会自行重放已经部分消费的请求，以免造成重复模型计算或计费。若上游偶发忽略 `stream: true` 并返回普通 JSON chat completion，bridge 会将其转换为合法的下游 SSE；若 HTTP 200 的非 SSE 正文是错误或无效结构，则重置连接让 ZCode 重试。上游明确返回 HTTP 错误或空正文时，仍按协议返回流内 SSE 错误。
-
-## Security
-
-- Config files should not contain API keys.
-- Use `apiKeyEnv` for interactive sessions.
-- Use `apiKeyCommand` for background services. Prefer the object form `{ "command": "/usr/bin/security", "args": [...] }` over the string form; the string form runs through `/bin/sh -lc` and is only for convenience.
-- Use `apiKeySource: "client"` when a local provider switcher owns the upstream key.
-- API key command results are cached in-process (default 10 min, override with `apiKeyCacheTtlMs`; set `0` to disable). The cache is busted automatically on an upstream 401.
-- Set `server.localToken` to require a bearer/x-api-key on every request. It is mandatory for non-loopback listeners.
-- Request bodies are capped at 10 MB by default (`server.maxBodyBytes`).
-- Upstream bodies have a complete-response deadline and cumulative size limit. Parsed SSE events have an independent size limit.
-- CLI-generated secret-bearing files and backups use mode `0600`.
-- Do not commit private config files.
-
-### Why this package runs shell commands
-
-This is a local bridge: it reads API keys from the environment or an OS keychain (`apiKeyCommand`), or forwards client-provided upstream keys when `apiKeySource` is `client`. It can install a macOS launchd service (`launchctl`) and write Codex/Claude profile files under your home directory. These require shell execution, environment-variable access, and filesystem writes — they are the package's purpose, not side effects. It has zero runtime dependencies and no install scripts.
+MIT
