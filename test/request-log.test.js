@@ -61,9 +61,9 @@ function testAllowlistedRequestDiagnostics() {
     "queryId",
     "requestId",
     "route",
-    "status",
     "traceId",
   ]);
+  assert.equal(record.status, undefined);
 }
 
 function testUntrustedFieldsCannotInjectLogLines() {

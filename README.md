@@ -336,6 +336,7 @@ Security defaults:
 - generated config, client profiles, and backups use private file permissions;
 - request bodies are capped at 10 MB by default;
 - upstream responses are subject to complete-response and cumulative-size limits;
+- diagnostic logs contain validated request metadata only; fallback logging never serializes upstream error objects;
 - API keys are never committed by the project and should not be placed in the bridge config;
 - command-backed keys should use the object form to avoid shell interpretation;
 - the package has no install script and does not execute network code during installation.
