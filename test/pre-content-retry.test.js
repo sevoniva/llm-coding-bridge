@@ -337,7 +337,7 @@ async function main() {
   console.log("pre-content retry tests passed");
 }
 
-main().catch((error) => {
-  console.error(error);
+main().catch(() => {
+  console.error("pre-content retry tests failed");
   process.exitCode = 1;
 });

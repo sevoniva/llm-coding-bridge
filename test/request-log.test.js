@@ -48,19 +48,14 @@ function testAllowlistedRequestDiagnostics() {
   assert.match(line, /query-safe/);
   assert.match(line, /\/v1\/chat\/completions/);
   assert.match(line, /glm-5\.2/);
-  assert.match(line, /UPSTREAM_RESPONSE_FAILED/);
-  assert.match(line, /ECONNRESET/);
   assert.doesNotMatch(
     line,
-    /secret-token|secret-cookie|secret-upstream-key|private prompt|private tool|secret response|fetch failed/,
+    /secret-token|secret-cookie|secret-upstream-key|private prompt|private tool|secret response|fetch failed|UPSTREAM_RESPONSE_FAILED|ECONNRESET/,
   );
 
   const record = JSON.parse(line.slice("[bridge] ".length));
   assert.deepEqual(Object.keys(record).sort(), [
-    "causeCode",
     "elapsedMs",
-    "errorCode",
-    "errorName",
     "model",
     "phase",
     "queryId",
