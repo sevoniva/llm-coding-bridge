@@ -300,6 +300,8 @@ The bridge sets Node's HTTP server timeouts explicitly so that long-running stre
 - `server.headersTimeoutMs` (default `65000`): time to receive request headers. Must be greater than `keepAliveTimeoutMs` or Node logs a warning.
 - `server.keepAliveTimeoutMs` (default `5000`): idle keep-alive window between sequential requests on one connection.
 - `server.heartbeatIntervalMs` (default `15000`): idle interval before the bridge emits a protocol-specific streaming heartbeat. Chat uses an empty completion data chunk across every idle gap; Responses and Anthropic retain their existing start-event/comment behavior. `0` disables it. See "Streaming keepalive" under ZCode compatibility below.
+- `server.maxConcurrentRequestsPerProvider` (default `0`, unlimited): maximum in-flight upstream request chains for each provider. Excess requests wait in FIFO order, remain cancellable, and do not consume retry attempts while queued. Use `1` for providers that aggressively rate-limit concurrent agent fan-out.
+- `server.minRequestIntervalMsPerProvider` (default `0`, disabled): minimum delay between upstream attempt starts for each provider. This includes bridge retries, so rolling request-rate limits are respected. For example, `7000` allows at most about 8.6 starts per minute.
 
 ```json
 {
@@ -308,7 +310,9 @@ The bridge sets Node's HTTP server timeouts explicitly so that long-running stre
     "requestTimeoutMs": 0,
     "headersTimeoutMs": 65000,
     "keepAliveTimeoutMs": 5000,
-    "heartbeatIntervalMs": 15000
+    "heartbeatIntervalMs": 15000,
+    "maxConcurrentRequestsPerProvider": 1,
+    "minRequestIntervalMsPerProvider": 7000
   }
 }
 ```
@@ -1046,6 +1050,8 @@ bridge 显式设置 Node HTTP 服务器超时，避免长流被 Node 默认值�
 - `server.headersTimeoutMs`（默认 `65000`）：接收请求头的时限。必须大于 `keepAliveTimeoutMs`，否则 Node 会告警。
 - `server.keepAliveTimeoutMs`（默认 `5000`）：同一连接上两次请求之间的空闲 keep-alive 窗口。
 - `server.heartbeatIntervalMs`（默认 `15000`）：bridge 在连续空闲多久后发送一次与协议匹配的流式心跳。Chat 会在每次空闲间隔发送空 completion 数据块；Responses 和 Anthropic 保持原有的起始事件/注释心跳行为。`0` 禁用。详见下文 ZCode 兼容的“流式保活”小节。
+- `server.maxConcurrentRequestsPerProvider`（默认 `0`，不限制）：每个 provider 同时进行的上游请求链上限。超出的请求按 FIFO 顺序等待；排队期间仍可取消，也不会消耗重试次数。对于会严格限制 agent 并发的 provider，建议设为 `1`。
+- `server.minRequestIntervalMsPerProvider`（默认 `0`，禁用）：同一个 provider 相邻两次上游尝试开始之间的最短间隔。bridge 内部重试也受此限制，因此能避开滚动请求频率限额。例如 `7000` 相当于每分钟最多约 8.6 次启动。
 
 ```json
 {
@@ -1054,7 +1060,9 @@ bridge 显式设置 Node HTTP 服务器超时，避免长流被 Node 默认值�
     "requestTimeoutMs": 0,
     "headersTimeoutMs": 65000,
     "keepAliveTimeoutMs": 5000,
-    "heartbeatIntervalMs": 15000
+    "heartbeatIntervalMs": 15000,
+    "maxConcurrentRequestsPerProvider": 1,
+    "minRequestIntervalMsPerProvider": 7000
   }
 }
 ```

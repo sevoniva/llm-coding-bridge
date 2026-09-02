@@ -717,6 +717,8 @@ function testServerScalarNormalizationAndFreeze() {
     headersTimeoutMs: "65000",
     keepAliveTimeoutMs: "5000",
     maxBodyBytes: "20971520",
+    maxConcurrentRequestsPerProvider: "1",
+    minRequestIntervalMsPerProvider: "7000",
     unknownScalar: "ignored",
     unknownNested: nested,
   };
@@ -731,6 +733,8 @@ function testServerScalarNormalizationAndFreeze() {
     headersTimeoutMs: 65000,
     keepAliveTimeoutMs: 5000,
     maxBodyBytes: 20971520,
+    maxConcurrentRequestsPerProvider: 1,
+    minRequestIntervalMsPerProvider: 7000,
   });
   assert.equal(Object.isFrozen(server), true);
   assert.equal(Object.hasOwn(server, "unknownScalar"), false);
@@ -745,6 +749,8 @@ function testServerScalarNormalizationAndFreeze() {
     { port: 65536 },
     { localToken: {} },
     { maxBodyBytes: 0 },
+    { maxConcurrentRequestsPerProvider: -1 },
+    { minRequestIntervalMsPerProvider: -1 },
   ]) {
     assert.throws(() => normalizeServer(invalid), /server\./i);
   }

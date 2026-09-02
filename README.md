@@ -239,6 +239,8 @@ It also provides:
 
 - independent header, first-data, idle, total, and streaming deadlines;
 - bounded `Retry-After` handling and per-route cooldown;
+- optional FIFO concurrency limits per provider so agent fan-out waits instead of overwhelming rate-limited upstreams;
+- optional per-provider start pacing so rolling request-rate limits are respected, including retries;
 - protocol-specific Responses, Chat Completions, and Anthropic-compatible streaming;
 - SSE heartbeats that do not count as upstream model output;
 - conversion of valid non-SSE JSON responses to SSE for streaming clients;
@@ -246,7 +248,7 @@ It also provides:
 - request-body, response-body, and SSE-event size limits;
 - backpressure-aware streaming and connection cleanup.
 
-For Chat Completions, `server.heartbeatIntervalMs` defaults to 15 seconds. Set it to `0` to disable downstream heartbeats.
+For Chat Completions, `server.heartbeatIntervalMs` defaults to 15 seconds. Set it to `0` to disable downstream heartbeats. Set `server.maxConcurrentRequestsPerProvider` to a positive integer to queue excess upstream work per provider; `0` keeps concurrency unlimited. Set `server.minRequestIntervalMsPerProvider` to pace every upstream attempt for a provider; `0` disables pacing.
 
 ## Client setup
 

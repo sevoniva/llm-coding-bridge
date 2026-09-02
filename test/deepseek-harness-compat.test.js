@@ -251,6 +251,47 @@ async function testCommentHeartbeatSupportsTransportWatchdogs() {
   });
 }
 
+async function testProviderConcurrencyQueuesHarnessRequests() {
+  let active = 0;
+  let maxActive = 0;
+  const startedAt = [];
+  await withUpstream(async (req, res) => {
+    for await (const _chunk of req) {}
+    startedAt.push(Date.now());
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end('data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    active -= 1;
+  }, async (upstreamPort) => {
+    const bridge = startBridge(upstreamPort, {
+      maxConcurrentRequestsPerProvider: 1,
+      minRequestIntervalMsPerProvider: 40,
+    });
+    const port = await bridgePort(bridge);
+    try {
+      const responses = await Promise.all(Array.from({ length: 3 }, () => fetch(
+        `http://127.0.0.1:${port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: harnessHeaders(),
+          body: JSON.stringify(chatBody()),
+        }
+      )));
+      const bodies = await Promise.all(responses.map((response) => response.text()));
+      assert.deepEqual(responses.map((response) => response.status), [200, 200, 200]);
+      assert.equal(bodies.every((body) => body.includes("data: [DONE]")), true);
+    } finally {
+      await close(bridge);
+    }
+  });
+  assert.equal(maxActive, 1);
+  assert.equal(startedAt.length, 3);
+  assert.ok(startedAt[1] - startedAt[0] >= 30, startedAt.join(","));
+  assert.ok(startedAt[2] - startedAt[1] >= 30, startedAt.join(","));
+}
+
 async function main() {
   process.env.HARNESS_COMPAT_TEST_KEY = "upstream-test-key";
   await testClientDetectionAndHeaderSelection();
@@ -258,6 +299,7 @@ async function main() {
   await testHttpErrorsRemainHttpErrors();
   await testEmbeddedHttpErrorsRemainHttpErrors();
   await testCommentHeartbeatSupportsTransportWatchdogs();
+  await testProviderConcurrencyQueuesHarnessRequests();
   console.log("DeepSeek Harness compatibility tests passed");
 }
 

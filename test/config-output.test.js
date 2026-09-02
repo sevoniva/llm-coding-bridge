@@ -93,6 +93,8 @@ async function testEffectiveOutputAndMigration() {
       host: "127.0.0.1",
       port: 37629,
       localTokenConfigured: true,
+      maxConcurrentRequestsPerProvider: 0,
+      minRequestIntervalMsPerProvider: 0,
     });
     assert.deepEqual(effective.routes.map((route) => ({
       alias: route.alias,
