@@ -387,6 +387,8 @@ The custom provider and `deepseek-official` then appear side by side in the mode
 
 The bridge recognizes the Harness User-Agent on Chat Completions requests. For that client it preserves empty assistant `content` in tool-call history, forwards only `user-agent`, `x-deepseek-harness-user-id`, `x-deepseek-harness-session-id`, and `x-deepseek-harness-compact`, and defers downstream SSE headers until a successful upstream SSE response is known. This lets normal upstream HTTP errors, including an HTTP-200 JSON envelope with a valid embedded 4xx/5xx `code`, remain HTTP errors instead of becoming a completed stream.
 
+Harness may send its instruction message with the newer OpenAI `developer` role. Before forwarding Chat Completions, the bridge normalizes that role to the broadly supported `system` role without mutating the client payload. This preserves the instruction boundary for strict OpenAI-compatible upstreams that reject `developer` messages.
+
 These optional route fields cover common gateway differences:
 
 ```json

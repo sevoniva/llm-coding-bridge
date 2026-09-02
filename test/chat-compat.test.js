@@ -32,6 +32,22 @@ function testSanitizeChatPayload() {
   });
   assert.deepEqual(payload, original);
 
+  const developerMessages = {
+    messages: [
+      { role: "developer", content: "system guidance" },
+      { role: "user", content: "hello" },
+    ],
+  };
+  const normalizedRoles = sanitizeChatPayload(developerMessages);
+  assert.deepEqual(normalizedRoles.messages, [
+    { role: "system", content: "system guidance" },
+    { role: "user", content: "hello" },
+  ]);
+  assert.deepEqual(developerMessages.messages[0], {
+    role: "developer",
+    content: "system guidance",
+  });
+
   const explicitlyDisabled = sanitizeChatPayload(payload, { stripChatTemplateKwargs: false });
   assert.notStrictEqual(explicitlyDisabled, payload);
   assert.deepEqual(explicitlyDisabled, payload);
