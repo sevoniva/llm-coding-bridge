@@ -33,7 +33,7 @@
     "test:soak": "node scripts/fault-soak.js --duration-ms 1200000 --seed 7070 --report .artifacts/fault-soak.json",
     "pack:check": "npm pack --dry-run",
     "verify": "npm run lint && npm test && npm run security:scan && npm run secretlint && npm run repo:gate && npm run release:gate && npm run sca && npm run pack:check",
-    "test:windows": "node test/cli-args.test.js && node test/credential-store.test.js && node test/client-setup.test.js && node test/service.test.js && node test/onboarding.test.js && node test/local-scripts.test.js && node test/windows-native.test.js && node test/multimodel-e2e.test.js && node test/security-http.test.js && node test/deepseek-harness-compat.test.js",
+    "test:windows": "node test/windows-security.test.js && node test/cli-args.test.js && node test/credential-store.test.js && node test/client-setup.test.js && node test/service.test.js && node test/onboarding.test.js && node test/local-scripts.test.js && node test/windows-native.test.js && node test/multimodel-e2e.test.js && node test/security-http.test.js && node test/deepseek-harness-compat.test.js",
     "pack:smoke": "node scripts/pack-smoke.js"
   },
   "engines": {
