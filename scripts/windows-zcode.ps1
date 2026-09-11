@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+# Avoid loading incompatible PowerShell 7 modules inherited through Node.
+$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $roots = @(
     'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',

@@ -5,6 +5,9 @@ param(
     [string]$File
 )
 $ErrorActionPreference = 'Stop'
+# Node can inherit PowerShell 7's module path. These helpers run in Windows
+# PowerShell 5.1 and must load its own built-in modules.
+$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 try {
@@ -47,7 +50,7 @@ try {
         }
     }
 } catch {
-    # Never include PowerShell exception details: they may contain the secret input.
+    # Never include credential exception details: they may contain the secret input.
     # File-only actions never read credentials; native tests use these diagnostics.
     if ($Action -eq 'ProtectFile' -or $Action -eq 'VerifyFile') {
         [Console]::Error.WriteLine($_.Exception.Message)

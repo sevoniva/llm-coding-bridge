@@ -4,6 +4,8 @@ param(
     [string]$Launcher
 )
 $ErrorActionPreference = 'Stop'
+# Avoid loading incompatible PowerShell 7 modules inherited through Node.
+$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 try {
     $scheduler = New-Object -ComObject 'Schedule.Service'
