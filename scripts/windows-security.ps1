@@ -48,6 +48,10 @@ try {
     }
 } catch {
     # Never include PowerShell exception details: they may contain the secret input.
+    # File-only actions never read credentials; native tests use these diagnostics.
+    if ($Action -eq 'ProtectFile' -or $Action -eq 'VerifyFile') {
+        [Console]::Error.WriteLine($_.Exception.Message)
+    }
     [Console]::Error.WriteLine('Windows credential or private-file operation failed.')
     exit 1
 }
