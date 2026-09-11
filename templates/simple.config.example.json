@@ -1,0 +1,12 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 37629
+  },
+  "upstream": {
+    "name": "My Provider",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "YOUR_MODEL_ID",
+    "apiKey": "YOUR_API_KEY"
+  }
+}

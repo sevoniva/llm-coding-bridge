@@ -15,6 +15,8 @@ function rejects(argv, pattern) {
 parses([], { command: "help" });
 parses(["--help"], { command: "help" });
 parses(["setup"], { command: "setup" });
+parses(["init-files", "--out", "C:\\LLM Bridge"], { command: "init-files", out: "C:\\LLM Bridge" });
+parses(["reload", "--config", "C:\\LLM Bridge\\config.json"], { command: "reload", config: "C:\\LLM Bridge\\config.json" });
 parses(["setup", "--profile", "/tmp/profile.json", "--advanced", "--home", "/tmp/home"], {
   command: "setup",
   profile: "/tmp/profile.json",
@@ -92,7 +94,15 @@ rejects(["serve", "--config", "a.json", "-c", "b.json"], /Duplicate option: --co
 rejects(["doctor", "--model", "one", "--all-models"], /cannot be used together/);
 rejects(["config", "show"], /config show requires --effective/);
 rejects(["config", "show", "--effective", "--dry-run"], /Unknown option: --dry-run/);
-rejects(["client", "add", "codex"], /Unknown client: codex/);
+parses(["client", "add", "codex"], { command: "client", action: "add", client: "codex" });
+parses(["client", "add", "claude-code", "--yes"], { command: "client", action: "add", client: "claude-code", yes: true });
+parses(["config", "path"], { command: "config", action: "path" });
+parses(["config", "validate"], { command: "config", action: "validate" });
+parses(["service-status"], { command: "service-status" });
+parses(["stop-service"], { command: "stop-service" });
+parses(["credential", "set", "--name", "coding", "--from-env", "MY_KEY"], { command: "credential", action: "set", name: "coding", fromEnv: "MY_KEY" });
+rejects(["credential", "set"], /requires --name/);
+rejects(["client", "remove", "codex"], /Unknown client/);
 rejects(["client", "rollback", "zcode"], /requires --backup/);
 rejects(["client", "add", "zcode", "extra"], /Unexpected positional argument: extra/);
 rejects(["config", "unknown"], /Unknown config action: unknown/);

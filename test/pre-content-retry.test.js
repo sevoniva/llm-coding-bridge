@@ -7,6 +7,7 @@ const { createRequestState } = require("../lib/request-state");
 const { createRouteHealthRegistry } = require("../lib/route-health");
 const { runChatAttempts } = require("../lib/attempt-runner");
 const { startServer } = require("../lib/server");
+const { createUpstreamConcurrencyRegistry } = require("../lib/upstream-concurrency");
 
 function sseData(delta) {
   return `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`;
@@ -27,6 +28,7 @@ async function startFakeUpstream() {
       const record = {
         authorization: req.headers.authorization,
         model: payload.model,
+        content: payload.messages?.[0]?.content,
         previousBodyCancelled: step.previousBody ? step.previousBody.closed : undefined,
       };
       requests.push(record);
@@ -209,6 +211,37 @@ async function main() {
     const openBody = { type: "status_stream", status: 503, closed: false };
     await run([openBody, { type: "sse", previousBody: openBody }]);
     assert.equal(fake.requests[1].previousBodyCancelled, true);
+
+    fake.script([
+      { type: "slow_headers" },
+      { type: "sse", frames: [sseData({ content: "second-recovered" })] },
+      { type: "sse", frames: [sseData({ content: "first-retried" })] },
+    ]);
+    const concurrencyRegistry = createUpstreamConcurrencyRegistry();
+    async function concurrentRequest(requestId, content) {
+      const data = [];
+      await runChatAttempts({
+        route,
+        payload: { model: route.upstreamModel, messages: [{ role: "user", content }], stream: true },
+        requestState: createRequestState({ requestId, model: route.alias }),
+        credentialResolver,
+        healthRegistry: createRouteHealthRegistry(),
+        concurrencyRegistry,
+        maxConcurrentRequestsPerProvider: 1,
+        eventStore: createEventStore(),
+        random: () => 0,
+        wait: async () => new Promise((resolve) => setTimeout(resolve, 10)),
+        onData: async (value) => { data.push(value); },
+      });
+      return data.join("\n");
+    }
+    const firstRequest = concurrentRequest("first-request", "first");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const secondRequest = concurrentRequest("second-request", "second");
+    const [firstResult, secondResult] = await Promise.all([firstRequest, secondRequest]);
+    assert.match(firstResult, /first-retried/);
+    assert.match(secondResult, /second-recovered/);
+    assert.deepEqual(fake.requests.map((request) => request.content), ["first", "second", "first"]);
 
     for (const delta of [
       { content: "text" },

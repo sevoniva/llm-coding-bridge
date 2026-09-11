@@ -1,5 +1,8 @@
 # Configuration Guide
 
+> **首次安装 / Windows / 让 AI 配置：请先读[中文安装配置与自启动指南](getting-started.zh-CN.md)。** 本页是高级配置与旧版兼容参考。简单使用 `init-files` 生成单文件配置和双击重启脚本；`setup`（v2）是可选向导。下方 `init` 示例为旧版 v1 向导。
+
+
 This guide explains how to configure `@sevoniva/llm-coding-bridge` for a dedicated OpenAI-compatible upstream provider.
 
 The bridge exposes local endpoints for coding clients:
@@ -36,7 +39,7 @@ Run the setup guide:
 llm-coding-bridge setup
 ```
 
-The config is written to `~/.llm-coding-bridge/config.json` by default (override with `--out`). All commands read that file by default; a `llm-coding-bridge.config.json` in the current directory takes precedence, and `--config` overrides both.
+The v2 `setup` wizard writes `~/.llm-coding-bridge/config.json` by default; override with `setup --config <file>`. Windows uses the same directory under `%USERPROFILE%`. `init --out` controls only the legacy v1 wizard. `config path` prints the selected path. General read commands prefer `--config`, then the current-directory `llm-coding-bridge.config.json`, then the home config. `restart-service` and `status` reuse the registered service config unless explicitly overridden. See the [onboarding guide](getting-started.zh-CN.md) for the current wizard and templates.
 
 ### Upgrading to v0.5.0
 
@@ -77,7 +80,9 @@ Version `0.8.0` adds source-compatible DeepSeek Harness custom-provider support.
 
 Add the bridge as a separate `openai-completions` custom provider in Harness with `baseURL: http://127.0.0.1:37629/v1`; no Harness source change is required. See the [DeepSeek Harness](#deepseek-harness) section for the provider shape and route options.
 
-The command starts an interactive bilingual setup flow:
+### Legacy v1 wizard: `llm-coding-bridge init`
+
+The following prompts and generated v1 configuration belong to `init`, not the recommended v2 `setup` command:
 
 ```text
 LLM Coding Bridge setup / LLM Coding Bridge 配置向导
@@ -100,7 +105,7 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 配置已写入：/Users/me/.llm-coding-bridge/config.json
 ```
 
-Client setup defaults to `No`. When enabled, `setup` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`. In client-key mode, generated client configuration can contain the real upstream key as a bearer token. Generated secret-bearing files and backups use mode `0600`.
+Client setup defaults to `No`. When enabled, `init` can merge Claude Code settings, generate an isolated Codex CLI profile, or configure Codex Desktop after a separate confirmation. Existing files are backed up first with `.bak-YYYYMMDD-HHMMSS`. In client-key mode, generated client configuration can contain the real upstream key as a bearer token. Generated secret-bearing files and backups use mode `0600`.
 
 Prompt reference:
 
@@ -137,7 +142,7 @@ Generated config:
 }
 ```
 
-Do not store API keys in this file.
+The wizard uses external credentials. For the simple editable-file workflow, `upstream.apiKey` is also supported; do not combine it with `apiKeyEnv`, `apiKeyCommand`, or `apiKeySource`. See the [quick start](getting-started.zh-CN.md).
 
 When `API key source` is `client`, the generated upstream uses `apiKeySource` and does not include `apiKeyEnv` or `apiKeyCommand`:
 
@@ -300,7 +305,7 @@ The bridge sets Node's HTTP server timeouts explicitly so that long-running stre
 - `server.headersTimeoutMs` (default `65000`): time to receive request headers. Must be greater than `keepAliveTimeoutMs` or Node logs a warning.
 - `server.keepAliveTimeoutMs` (default `5000`): idle keep-alive window between sequential requests on one connection.
 - `server.heartbeatIntervalMs` (default `15000`): idle interval before the bridge emits a protocol-specific streaming heartbeat. Chat uses an empty completion data chunk across every idle gap; Responses and Anthropic retain their existing start-event/comment behavior. `0` disables it. See "Streaming keepalive" under ZCode compatibility below.
-- `server.maxConcurrentRequestsPerProvider` (default `0`, unlimited): maximum in-flight upstream request chains for each provider. Excess requests wait in FIFO order, remain cancellable, and do not consume retry attempts while queued. Use `1` for providers that aggressively rate-limit concurrent agent fan-out.
+- `server.maxConcurrentRequestsPerProvider` (default `0`, unlimited): maximum in-flight upstream attempts for each provider. Excess attempts wait in FIFO order, remain cancellable, and do not consume retry attempts while queued. A failed or timed-out attempt releases its slot before retrying, so already queued work is not blocked by one request's retry chain. Use `1` for providers that aggressively rate-limit concurrent agent fan-out.
 - `server.minRequestIntervalMsPerProvider` (default `0`, disabled): minimum delay between upstream attempt starts for each provider. This includes bridge retries, so rolling request-rate limits are respected. For example, `7000` allows at most about 8.6 starts per minute.
 
 ```json
@@ -646,7 +651,9 @@ Or let `init` merge them into `~/.claude/settings.json`. Existing settings are b
 ~/.claude/settings.json.bak-YYYYMMDD-HHMMSS
 ```
 
-## 7. macOS Autostart
+## 7. Windows and macOS Autostart
+
+Windows uses a current-user Task Scheduler logon task with DPAPI credentials. Use the same install/restart/stop/uninstall commands below; `service-status` inspects registration without loading bridge config. Follow the [Windows guide](getting-started.zh-CN.md) for persistent credentials and PowerShell syntax. The launchd-specific details below apply to macOS only.
 
 Install launchd service:
 
@@ -889,7 +896,7 @@ Wrote config: /Users/me/.llm-coding-bridge/config.json
 }
 ```
 
-bridge 配置不保存上游 API Key；client key 模式下生成的客户端配置可能保存该 Key。
+上述向导使用外部凭据；简单文件模式也支持直接填写 `upstream.apiKey`，且不能与 `apiKeyEnv`、`apiKeyCommand`、`apiKeySource` 混用。client key 模式下生成的客户端配置可能保存该 Key。
 
 当 `API key source` 选择 `client` 时，生成的上游配置使用 `apiKeySource`，不会包含 `apiKeyEnv` 或 `apiKeyCommand`：
 
@@ -1050,7 +1057,7 @@ bridge 显式设置 Node HTTP 服务器超时，避免长流被 Node 默认值�
 - `server.headersTimeoutMs`（默认 `65000`）：接收请求头的时限。必须大于 `keepAliveTimeoutMs`，否则 Node 会告警。
 - `server.keepAliveTimeoutMs`（默认 `5000`）：同一连接上两次请求之间的空闲 keep-alive 窗口。
 - `server.heartbeatIntervalMs`（默认 `15000`）：bridge 在连续空闲多久后发送一次与协议匹配的流式心跳。Chat 会在每次空闲间隔发送空 completion 数据块；Responses 和 Anthropic 保持原有的起始事件/注释心跳行为。`0` 禁用。详见下文 ZCode 兼容的“流式保活”小节。
-- `server.maxConcurrentRequestsPerProvider`（默认 `0`，不限制）：每个 provider 同时进行的上游请求链上限。超出的请求按 FIFO 顺序等待；排队期间仍可取消，也不会消耗重试次数。对于会严格限制 agent 并发的 provider，建议设为 `1`。
+- `server.maxConcurrentRequestsPerProvider`（默认 `0`，不限制）：每个 provider 同时进行的上游尝试上限。超出的尝试按 FIFO 顺序等待；排队期间仍可取消，也不会消耗重试次数。失败或超时的尝试会先释放槽位再重新排队，因此一个请求的重试链不会阻塞已经在等待的请求。对于会严格限制 agent 并发的 provider，建议设为 `1`。
 - `server.minRequestIntervalMsPerProvider`（默认 `0`，禁用）：同一个 provider 相邻两次上游尝试开始之间的最短间隔。bridge 内部重试也受此限制，因此能避开滚动请求频率限额。例如 `7000` 相当于每分钟最多约 8.6 次启动。
 
 ```json
@@ -1383,7 +1390,9 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="model-name"
 ~/.claude/settings.json.bak-YYYYMMDD-HHMMSS
 ```
 
-## 7. macOS 开机自启
+## 7. Windows / macOS 登录自启动
+
+Windows 使用当前用户的任务计划程序与 DPAPI 加密密钥。安装、重启、停止、卸载命令与 macOS 相同；`service-status` 可独立检查任务。两者都在开机登录当前账户后启动。完整 Windows 操作见[中文入门指南](getting-started.zh-CN.md)，以下 launchd 路径仅适用于 macOS。
 
 安装 launchd 服务：
 

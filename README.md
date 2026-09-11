@@ -1,12 +1,23 @@
 # @sevoniva/llm-coding-bridge
 
+**简单用法：改一个配置文件 → 双击重启 → ZCode 填本地地址。** [Windows / macOS 中文说明](docs/getting-started.zh-CN.md)
+
+```text
+npm install -g @sevoniva/llm-coding-bridge@latest
+llm-coding-bridge init-files
+```
+
+这会生成 `config.json` 和启动、重启、停止、自启动管理脚本。只需填写配置里的 `baseUrl`、`model`、`apiKey`，Windows 双击 `restart.cmd`（macOS 双击 `restart.command`）即可加载配置、启动服务并启用登录自启动。默认在 ZCode 填 `http://127.0.0.1:37629/v1`，模型填配置中的 `model`，API Key 填 `local`。
+
+以后修改配置，保存后再次双击重启即可。向导 `setup`、多模型和系统密钥存储仍可选用，见[进阶配置流程](docs/guided-setup.zh-CN.md)。
+
 [![npm](https://img.shields.io/npm/v/@sevoniva/llm-coding-bridge)](https://www.npmjs.com/package/@sevoniva/llm-coding-bridge)
 [![CI](https://github.com/sevoniva/llm-coding-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/sevoniva/llm-coding-bridge/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A local, production-oriented protocol bridge for coding clients that need one stable OpenAI-compatible endpoint in front of one or more upstream models.
 
-The bridge keeps client configuration, model aliases, upstream model IDs, credentials, streaming behavior, and route health in one controlled local service. It does not modify client source code and it does not store upstream API keys in the bridge configuration.
+The bridge keeps client configuration, model aliases, upstream model IDs, credentials, streaming behavior, and route health in one controlled local service. It does not modify client source code. The simple file workflow accepts `upstream.apiKey` in a private local config; the optional setup wizard stores keys in the system credential store instead.
 
 ## At a glance
 
@@ -35,7 +46,7 @@ Supported client surfaces:
 | OpenAI-compatible clients | `/v1/chat/completions` | Chat Completions |
 | Client discovery | `/v1/models`, `/health` | Model and service checks |
 
-The default listener is loopback-only. The service has no runtime dependencies and can be managed by macOS launchd.
+The default listener is loopback-only. The service has no runtime dependencies and can be managed by macOS launchd or Windows Task Scheduler.
 
 ## Install
 
@@ -48,46 +59,18 @@ llm-coding-bridge --help
 
 ## Quick start
 
-Run the guided setup. It creates `~/.llm-coding-bridge/config.json`, keeps credentials outside that file, and can optionally configure local clients.
-
-```bash
-llm-coding-bridge setup
-llm-coding-bridge doctor --all-models
-llm-coding-bridge install-service
-curl -fsS http://127.0.0.1:37629/health
+```text
+npm install -g @sevoniva/llm-coding-bridge@latest
+llm-coding-bridge init-files
 ```
 
-Expected health response:
+Open the printed folder (default `~/.llm-coding-bridge`, or `%USERPROFILE%\.llm-coding-bridge` on Windows). Edit `config.json`: replace `upstream.baseUrl`, `upstream.model`, and `upstream.apiKey`. Double-click `restart.cmd` on Windows or `restart.command` on macOS. The script reloads that exact file, enables autostart after login, waits for the new configuration to become healthy, and shows the client connection details.
 
-```json
-{"ok":true}
-```
+For ZCode, use `http://127.0.0.1:37629/v1`, the configured upstream model ID, and `local` as the local API key. After changing the file, double-click restart again. Existing `config.json` is preserved when `init-files` is rerun. Use `init-files --out <directory>` to choose a visible folder. The file contains your upstream API key, so keep it local.
 
-The local base URL for clients is:
+The generated folder includes `start`, `restart`, `stop`, `status`, and `disable-autostart` scripts. Stop is temporary; disable-autostart stops and removes the login task. On package or Node upgrades, rerun `init-files` in the same directory to refresh script paths, then double-click restart.
 
-```
-http://127.0.0.1:37629/v1
-```
-
-For a background service, prefer a command-backed key (for example, macOS Keychain) instead of relying on a shell startup file:
-
-```json
-{
-  "upstream": {
-    "apiKeyCommand": {
-      "command": "/usr/bin/security",
-      "args": ["find-generic-password", "-a", "LLM_API_KEY", "-s", "llm-coding-bridge", "-w"]
-    }
-  }
-}
-```
-
-Package upgrades do not rewrite the bridge configuration or client profiles. After changing configuration or upgrading the package, run:
-
-```bash
-llm-coding-bridge restart-service
-llm-coding-bridge status
-```
+Optional guided setup with system-managed credentials and automatic client configuration: `llm-coding-bridge setup`. See the [Chinese quick start](docs/getting-started.zh-CN.md), [guided setup](docs/guided-setup.zh-CN.md), or [complete configuration reference](docs/configuration.md).
 
 ## DeepSeek Harness integration
 
@@ -239,7 +222,7 @@ It also provides:
 
 - independent header, first-data, idle, total, and streaming deadlines;
 - bounded `Retry-After` handling and per-route cooldown;
-- optional FIFO concurrency limits per provider so agent fan-out waits instead of overwhelming rate-limited upstreams;
+- optional FIFO concurrency limits per provider, scoped to each upstream attempt so stalled attempts yield to queued work before retrying;
 - optional per-provider start pacing so rolling request-rate limits are respected, including retries;
 - protocol-specific Responses, Chat Completions, and Anthropic-compatible streaming;
 - SSE heartbeats that do not count as upstream model output;
@@ -302,9 +285,11 @@ Endpoint: /chat/completions
 Model: one of the aliases returned by /v1/models
 ```
 
-## macOS service management
+## Windows and macOS service management
 
-`llm-coding-bridge install-service` installs a per-user launchd agent at `~/Library/LaunchAgents`. It starts when the user session loads and is configured to restart after an unexpected exit.
+`llm-coding-bridge install-service` installs a per-user launchd agent on macOS or a Task Scheduler logon task on Windows, and starts it immediately. Both start after the current user logs in. Windows runs without a persistent console window, appends logs, and retries failures every minute up to 999 times. This is user-session autostart, not a pre-login system service.
+
+Use `service-status` to inspect the registered task even when the bridge is down. `stop-service` temporarily stops it; `uninstall-service` stops it and removes autostart while keeping configuration and credentials. `restart-service` reuses the installed absolute config path unless `--config` is supplied, and refreshes Node/npm paths after upgrades.
 
 ```bash
 llm-coding-bridge install-service
@@ -369,16 +354,13 @@ Further reference: [Configuration Guide](docs/configuration.md), [release notes]
 
 ## 中文快速指南
 
-`@sevoniva/llm-coding-bridge` 是一个本地协议桥接服务，把 Codex、Claude 类客户端、DeepSeek Harness 和其他 OpenAI-compatible 客户端统一接到稳定的本地 `/v1` 端点，再按模型别名转发到一个或多个上游。它不需要修改客户端源码，默认只监听本机回环地址，也不会把上游 API Key 写进 bridge 配置。
+`@sevoniva/llm-coding-bridge` 是一个本地协议桥接服务，把 Codex、Claude 类客户端、DeepSeek Harness 和其他 OpenAI-compatible 客户端统一接到稳定的本地 `/v1` 端点，再按模型别名转发到一个或多个上游。它不需要修改客户端源码，默认只监听本机回环地址。简单配置支持在私有本地文件中填写 `upstream.apiKey`；可选向导则使用系统密钥存储。
 
-安装和启动：
+安装并生成配置文件：
 
 ```bash
 npm install -g @sevoniva/llm-coding-bridge@latest
-llm-coding-bridge setup
-llm-coding-bridge doctor --all-models
-llm-coding-bridge install-service
-curl -fsS http://127.0.0.1:37629/health
+llm-coding-bridge init-files
 ```
 
 Harness 配置重点：
@@ -391,7 +373,7 @@ Harness 配置重点：
 
 如果上游不接受顶层 `thinking` 或有输出上限，在 bridge 路由中配置 `translateThinkingToReasoningEffort` 和 `maxOutputTokens`。完整配置、协议行为和安全边界见 [Configuration Guide](docs/configuration.md)。
 
-macOS 自启动：
+Windows / macOS 自启动：
 
 ```bash
 llm-coding-bridge install-service
@@ -399,7 +381,7 @@ llm-coding-bridge status
 llm-coding-bridge logs --lines 80
 ```
 
-该命令安装当前用户的 launchd 服务：登录时启动，异常退出自动拉起；macOS 睡眠时已建立的流式连接仍可能中断。
+Windows 使用任务计划程序，macOS 使用 launchd：开机登录当前账户后启动，异常退出自动重试。详细步骤、配置路径和故障处理见[中文安装配置与自启动指南](docs/getting-started.zh-CN.md)。
 
 ## License
 

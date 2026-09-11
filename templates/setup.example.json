@@ -1,0 +1,18 @@
+{
+  "provider": {
+    "name": "My Provider",
+    "baseUrl": "https://api.example.com/v1"
+  },
+  "models": [
+    {
+      "alias": "coding",
+      "upstreamModel": "replace-with-provider-model-id",
+      "credential": { "source": "stored" },
+      "reliabilityPolicy": "stable"
+    }
+  ],
+  "clients": [],
+  "service": "install",
+  "probe": "all",
+  "server": { "host": "127.0.0.1", "port": 37629 }
+}

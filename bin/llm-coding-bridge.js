@@ -15,8 +15,10 @@ const { doctor, probeAllModels, probeModel, status } = require("../lib/doctor");
 const { createCodexProfile } = require("../lib/codex-profile");
 const { configureClaudeCode, configureCodexDesktop, manualClaude, manualCodexCli, manualCodexDesktop, manualSetup } = require("../lib/client-setup");
 const { readFileSnapshot, writePrivateFile } = require("../lib/file-safety");
-const { installService, restartService, uninstallService } = require("../lib/service");
-const { loadSetupProfile, runGuidedSetup, runSetup } = require("../lib/setup");
+const { installedServiceConfig, installService, restartService, stopService, uninstallService, serviceStatus } = require("../lib/service");
+const { createCredentialStore } = require("../lib/credential-store");
+const { initLocalFiles, reloadLocalConfig } = require("../lib/local-scripts");
+const { loadSetupProfile, runGuidedSetup, runSetup, storeInteractiveSecret } = require("../lib/setup");
 const {
   applyZcodePlan,
   applyZcodeRollback,
@@ -40,17 +42,26 @@ function withCliDefaults(parsed) {
   args.home ||= os.homedir();
   args.name ||= "llm-coding-bridge";
   args.lines ||= 80;
-  args.config ||= defaultConfigPath(args.home);
-  args.out ||= homeConfigPath(args.home);
+  args.config ||= args.command === "setup" ? homeConfigPath(args.home)
+    : ["restart-service", "status"].includes(args.command) ? installedServiceConfig(args.home) || defaultConfigPath(args.home)
+      : defaultConfigPath(args.home);
+  args.out ||= args.command === "init-files" ? path.dirname(homeConfigPath(args.home)) : homeConfigPath(args.home);
   return args;
 }
 
 function usage() {
   return `Usage:
-  llm-coding-bridge setup [--profile <file>] [--advanced] [--yes]
+  llm-coding-bridge init-files [--out <directory>]
+  llm-coding-bridge reload [--config <file>]
+  llm-coding-bridge setup [--profile <file>] [--config <file>] [--advanced] [--yes]
+  llm-coding-bridge template setup
+  llm-coding-bridge credential set --name <alias> [--from-env <variable>]
+  llm-coding-bridge config path [--config <file>]
+  llm-coding-bridge config validate [--config <file>]
   llm-coding-bridge config show --effective [--config <file>]
   llm-coding-bridge config migrate [--dry-run] [--config <file>]
   llm-coding-bridge client add zcode [--dry-run]
+  llm-coding-bridge client add codex|claude-code [--dry-run] [--yes]
   llm-coding-bridge client remove zcode [--dry-run]
   llm-coding-bridge client rollback zcode --backup <file>
   llm-coding-bridge doctor --model <alias> | --all-models
@@ -68,14 +79,24 @@ Advanced compatibility commands:
   llm-coding-bridge logs --lines 80
   llm-coding-bridge install-service [--config <file>]
   llm-coding-bridge restart-service [--config <file>]
+  llm-coding-bridge stop-service
+  llm-coding-bridge service-status
   llm-coding-bridge uninstall-service
 
 Without --config, commands use ./${CWD_CONFIG} if present,
-otherwise ~/.llm-coding-bridge/config.json. init writes there by default.`;
+otherwise ~/.llm-coding-bridge/config.json. setup writes to the home config unless --config is set.
+restart-service and status reuse the installed service config unless --config is set.
+Windows home: %USERPROFILE% (PowerShell: $HOME). Autostart: Windows/macOS, after login.
+中文上手指南: docs/getting-started.zh-CN.md (included in the npm package).`;
 }
 
 function publicErrorMessage(error) {
   const message = String(error && error.message ? error.message : "");
+  if (["WINDOWS_OPERATION_FAILED", "SERVICE_UNSUPPORTED", "SERVICE_OPERATION_FAILED"].includes(error?.code)) return message;
+  if (message.startsWith("upstream.apiKey ")) return message;
+  if (/^upstream\.(baseUrl|model) must /.test(message)) return message;
+  if (/^(Setup profile|Existing bridge config|Run config migrate|Interactive setup|Setup service|Non-interactive|Credential|credential set|One or more setup model probes)/.test(message)) return message;
+  if (/^(server\.[A-Za-z]+|providers\[\d+\](?:\.[A-Za-z]+|\[\d+\])*|Version 2 providers|Referenced credential descriptor|Duplicate model alias|A model credential reference) /.test(message)) return message;
   switch (message) {
     case "Missing upstream or upstreams.":
       return "Missing upstream or upstreams.";
@@ -111,8 +132,8 @@ function publicErrorMessage(error) {
   if (message.endsWith("requires --effective.")) return message;
   if (message.endsWith("requires --backup.")) return message;
   if (message.endsWith("must be a positive integer.")) return message;
-  if (message.startsWith("Config file not found:")) return "Config file not found. Run \"llm-coding-bridge init\" to create one.";
-  if (message.startsWith("Config file is not valid JSON:")) return "Config file is not valid JSON.";
+  if (message.startsWith("Config file not found:")) return "Config file not found. Run llm-coding-bridge init-files or setup. / 配置不存在，请运行 init-files 生成配置和脚本。";
+  if (message.startsWith("Config file is not valid JSON:")) return "Config file is not valid JSON. Use UTF-8, double quotes, no comments or trailing commas. / 配置必须是 UTF-8 JSON，使用双引号，不能写注释或多余逗号。";
   if (message.startsWith("apiKeyCommand exited with")) return "apiKeyCommand exited with a non-zero status.";
   if (/^upstream\.(timeoutMs|maxResponseBytes|maxSseEventBytes) must be a positive integer\.$/.test(message)) return message;
   if (message.includes("already exists")) return "Target file already exists. Re-run with --force to overwrite.";
@@ -300,6 +321,8 @@ function createPrompt() {
 
 function printTemplate(name) {
   let file = "codex.config.toml";
+  if (name === "setup") file = "setup.example.json";
+  if (name === "config") file = "bridge.config.example.json";
   if (name === "claude" || name === "claude-code") file = "claude-code.env";
   if (name === "codex-desktop") file = "codex-desktop.config.toml";
   if (name === "zcode" || name === "z-code") file = "zcode.env";
@@ -322,7 +345,15 @@ function printLogs(home, lines) {
 }
 
 async function configCommand(args) {
+  if (args.action === "path") {
+    console.log(path.resolve(args.config));
+    return;
+  }
   const config = loadConfig(args.config);
+  if (args.action === "validate") {
+    console.log(`[OK] config: ${config.path}\n[OK] version: ${config.version}; models: ${config.routes.length}`);
+    return;
+  }
   if (args.action === "show") {
     console.log(JSON.stringify(effectiveConfigDocument(config), null, 2));
     return;
@@ -369,24 +400,44 @@ async function setupCommand(args) {
   let result;
   if (args.profile) {
     const profile = loadSetupProfile(args.profile);
-    if (profile.clients.includes("zcode") && !args.yes) {
-      throw new Error("Non-interactive ZCode setup requires --yes.");
+    if (profile.clients.length && !args.yes) {
+      throw new Error("Non-interactive client setup requires --yes.");
     }
     result = await runSetup(profile, {
       home: args.home,
-      configPath: homeConfigPath(args.home),
+      configPath: args.config,
     });
   } else {
     result = await runGuidedSetup({
       home: args.home,
-      configPath: homeConfigPath(args.home),
+      configPath: args.config,
       advanced: args.advanced,
     });
   }
   console.log(`[OK] setup complete: ${result.configFile}`);
   console.log(`[OK] aliases configured: ${result.aliases.length}`);
   if (result.zcode) console.log(`[OK] ZCode ${result.zcode.changed ? "updated" : "already current"}`);
+  for (const [client, write] of Object.entries(result.clients)) printWriteResult(client, write);
+  if (result.configBackup) console.log(`[OK] backup ${result.configBackup}`);
   for (const probe of result.probes) printProbe(probe);
+  console.log(`\n配置文件 / Config: ${result.configFile}`);
+  console.log(result.service === "none" ? "下一步 / Next: llm-coding-bridge serve (foreground) or install-service (autostart)" : "下一步 / Next: llm-coding-bridge status");
+}
+
+async function credentialCommand(args) {
+  const store = createCredentialStore({ home: args.home });
+  if (!["darwin", "win32"].includes(process.platform)) throw new Error("Credential storage requires Windows or macOS. On Linux use an env credential.");
+  if (args.fromEnv) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(args.fromEnv)) throw new Error("Credential environment variable name is invalid.");
+    const value = process.env[args.fromEnv];
+    if (!value) throw new Error("Credential environment variable is unavailable.");
+    const secret = Buffer.from(value);
+    try { store.save(args.name, secret); } finally { secret.fill(0); }
+  } else {
+    await storeInteractiveSecret(store, args.name);
+  }
+  console.log(`[OK] Credential saved / 密钥已保存: ${args.name}`);
+  console.log("Use credential: {\"source\":\"stored\"} in template setup. Restart the service after changing a key.");
 }
 
 function zcodeRunning() {
@@ -421,6 +472,19 @@ async function mutationConfirmed(args, question) {
 }
 
 async function clientCommand(args) {
+  if (args.restartZcode && process.platform !== "darwin") throw new Error("Non-interactive ZCode restart is only available on macOS. Close and reopen ZCode manually on Windows.");
+  if (args.client !== "zcode") {
+    const config = loadConfig(args.config);
+    const clientFile = args.client === "codex" ? path.join(args.home, ".codex", "config.toml") : path.join(args.home, ".claude", "settings.json");
+    if (args.dryRun) {
+      console.log(JSON.stringify({ client: args.client, file: clientFile, model: config.defaultUpstream.alias || config.defaultUpstream.model, backupBeforeWrite: true }, null, 2));
+      return;
+    }
+    if (!await mutationConfirmed(args, `Back up and configure ${args.client}? / 备份并接入 ${args.client}？[y/N]: `)) return;
+    const configure = args.client === "codex" ? configureCodexDesktop : configureClaudeCode;
+    printWriteResult(args.client, configure(config, args.home));
+    return;
+  }
   const detected = detectZcodeState({ home: args.home });
   let plan;
   if (args.action === "rollback") {
@@ -466,17 +530,28 @@ async function main() {
   }
   if (args.command === "template") return printTemplate(args.template || "codex");
   if (args.command === "setup") return setupCommand(args);
+  if (args.command === "init-files") {
+    const result = initLocalFiles(args.out, { home: args.home });
+    console.log(`[OK] Config and clickable scripts / 配置及双击脚本: ${result.root}`);
+    console.log("Edit config.json: upstream.baseUrl, upstream.model, upstream.apiKey.");
+    console.log(`Then double-click restart.${process.platform === "win32" ? "cmd" : "command"}. / 填好后双击重启脚本即可。`);
+    return;
+  }
+  if (args.command === "reload") return reloadLocalConfig(args.config, { home: args.home });
+  if (args.command === "credential") return credentialCommand(args);
   if (args.command === "config") return configCommand(args);
   if (args.command === "client") return clientCommand(args);
   if (args.command === "init") return initConfig(args.out, args.doctor, args.home);
   if (args.command === "doctor") return doctorCommand(args);
-  if (args.command === "status") return status(loadConfig(args.config));
+  if (args.command === "status") return status(loadConfig(args.config), { home: args.home });
   if (args.command === "codex-profile") return createCodexProfile(loadConfig(args.config), args.name, args.home, args.force);
   if (args.command === "logs") return printLogs(args.home, args.lines);
   if (args.command === "serve") return startServer(loadConfig(args.config));
-  if (args.command === "install-service") return installService(loadConfig(args.config).path);
-  if (args.command === "restart-service") return restartService(loadConfig(args.config).path);
-  if (args.command === "uninstall-service") return uninstallService();
+  if (args.command === "install-service") return installService(loadConfig(args.config).path, { home: args.home });
+  if (args.command === "restart-service") return restartService(loadConfig(args.config).path, { home: args.home });
+  if (args.command === "stop-service") return stopService({ home: args.home });
+  if (args.command === "service-status") return console.log(JSON.stringify(serviceStatus({ home: args.home }), null, 2));
+  if (args.command === "uninstall-service") return uninstallService({ home: args.home });
   throw new Error(`Unknown command: ${args.command}`);
 }
 
